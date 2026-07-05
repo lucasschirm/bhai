@@ -1,1 +1,5 @@
-pnpm exec biome check --staged
+files="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(js|jsx|ts|tsx|json|jsonc|mjs|cjs)$' || true)"
+
+if [ -n "$files" ]; then
+	pnpm exec biome check $files
+fi
