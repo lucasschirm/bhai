@@ -20,6 +20,8 @@
 // one kernel directory; the behavioral contract is unchanged.
 
 import type { JSONSchema } from "../types/content.js"
+import type { EmitResult, Unsubscribe } from "../types/events.js"
+import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
 
 /**
  * Host-supplied constructor options for {@link BHAI}.
@@ -156,6 +158,23 @@ export class BHAI {
 	 */
 	private unnamedCounter = 0
 
+	/**
+	 * Guards against double-`init()` (see {@link BHAI.init}'s documented
+	 * assumption). Set to `true` on first successful entry; a second call
+	 * returns immediately without re-running hooks or re-firing the
+	 * `initialize` framework event.
+	 */
+	private initialized = false
+
+	/**
+	 * The framework event bus (§ 8). All `on()`/`emit()` calls delegate here.
+	 * The kernel fires reserved-name events (`initialize`/`dispose`/`error`)
+	 * through the bus's internal `dispatch()` bypass, which skips the public
+	 * reserved-name check. One bus per kernel instance; TASK_0023 adds a
+	 * second per `Conversation`, reusing the same `EventBus` class.
+	 */
+	private readonly bus: EventBus = new EventBus()
+
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
 	}
@@ -194,19 +213,71 @@ export class BHAI {
 	// loudly instead of silently no-op'ing. Implemented by the cited task.
 	// ---------------------------------------------------------------------------
 
-	/** TODO(TASK_0004): global event bus (§ 8.1). */
-	on(): never {
-		throw new Error("bh.on(): not implemented — see TASK_0004")
+	/**
+	 * Register a handler for `event` on the framework bus (§ 8.1). Returns an
+	 * {@link Unsubscribe} that removes it. Handlers run in registration order
+	 * (§ 8.2 rule 1). Any event name — including reserved kernel names like
+	 * `initialize`/`dispose`/`error` — may be subscribed to; only the public
+	 * {@link BHAI.emit} restricts which names a plugin may fire.
+	 *
+	 * Implemented by TASK_0004 as a thin delegation to the internally-owned
+	 * {@link EventBus} instance.
+	 */
+	on<Payload>(event: string, handler: Handler<Payload>): Unsubscribe {
+		return this.bus.on(event, handler)
 	}
 
-	/** TODO(TASK_0004): emit a namespaced custom event (§ 8.4). */
-	emit(): never {
-		throw new Error("bh.emit(): not implemented — see TASK_0004")
+	/**
+	 * Emit a namespaced custom event on the framework bus (§ 8.4). Throws
+	 * synchronously (before dispatch begins) if `event` is a reserved kernel
+	 * name or an un-namespaced custom name; the one documented exception is
+	 * `compact`, a legal manual trigger. Resolves with an {@link EmitResult}
+	 * after the dispatch and any re-entrantly queued dispatches have settled.
+	 *
+	 * Implemented by TASK_0004 as a thin delegation to the internally-owned
+	 * {@link EventBus} instance.
+	 */
+	emit<Payload>(
+		event: string,
+		payload: Payload,
+		options?: DispatchOptions,
+	): Promise<EmitResult<Payload>> {
+		return this.bus.emit(event, payload, options)
 	}
 
-	/** TODO(TASK_0005): run plugin `initialize` hooks in use() order (§ 7.3). */
+	/**
+	 * Runs plugin `initialize` hooks (in `use()`-registration order), then the
+	 * `initialize` framework event (§ 7.3 step 2).
+	 *
+	 * ASSUMPTION (undocumented in ARCHITECTURE.md § 7.3): calling `init()` a
+	 * second time is a no-op. Hooks do not re-run and the `initialize` event
+	 * does not re-fire. This was chosen over "throw on double-init" or
+	 * "re-run everything" because idempotent `init()` is the least surprising
+	 * behavior for hosts that might call `init()` defensively (e.g. before
+	 * every conversation creation) without tracking whether it already ran.
+	 */
 	async init(): Promise<void> {
-		throw new Error("bh.init(): not implemented — see TASK_0005")
+		if (this.initialized) {
+			return
+		}
+		this.initialized = true
+
+		for (const plugin of this.plugins) {
+			const hook = plugin.capabilities?.initialize
+			if (hook) {
+				await hook({ bh: this })
+			}
+		}
+
+		// TODO(TASK_0015): resolve `modelSource`/`getMcps` hooks here, in
+		// registration order, merging results into the tool/driver/MCP
+		// registries. Per § 8.5 step 2, this resolution happens AFTER all
+		// `initialize` hooks have run and BEFORE the `initialize` framework
+		// event fires below. Emits `driver.registered`, `mcp.attached`, and one
+		// `tool.registered` per discovered tool — none of that is implemented
+		// here.
+
+		await this.bus.dispatch("initialize", { bh: this })
 	}
 
 	/**
@@ -269,11 +340,26 @@ export class BHAI {
 	}
 
 	/**
-	 * TODO(TASK_0005): partial dispose() for plugin-hook ordering (§ 7.3 step 4).
-	 * Full teardown (abort in-flight turns, close MCP sessions) is TASK_0035.
+	 * Runs plugin `dispose` hooks in **reverse** `use()`-registration order
+	 * (last-registered plugin's `dispose` runs first), then fires the `dispose`
+	 * framework event (§ 7.3 step 4).
+	 *
+	 * PARTIAL (TASK_0005): only hook ordering + the `dispose` event are
+	 * implemented here. Full teardown — aborting in-flight turns, unwinding
+	 * tool/command/driver/MCP registrations, closing MCP sessions — is
+	 * TASK_0035's job.
 	 */
 	async dispose(): Promise<void> {
-		throw new Error("bh.dispose(): not implemented — see TASK_0005 / TASK_0035")
+		for (const plugin of [...this.plugins].reverse()) {
+			const hook = plugin.capabilities?.dispose
+			if (hook) {
+				await hook({ bh: this })
+			}
+		}
+		// TODO(TASK_0035): abort in-flight turns, unwind tool/command/driver/MCP
+		// registrations made during setup()/initialize(), close MCP sessions.
+		// This task only handles dispose-hook ordering.
+		await this.bus.dispatch("dispose", { bh: this })
 	}
 
 	// ---------------------------------------------------------------------------

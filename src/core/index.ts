@@ -12,3 +12,9 @@ export {
 	type BHAIPluginFactory,
 	type BHAIPluginLike,
 } from "./bhai.js"
+export {
+	EventBus,
+	type BlockSignal,
+	type DispatchOptions,
+	type Handler,
+} from "./event-bus.js"
