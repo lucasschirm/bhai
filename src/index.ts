@@ -6,6 +6,7 @@
 //
 // Adding a new plugin means appending one `export * from './plugins/<name>/index.js';`
 // line here, plus the matching `package.json` exports entry and `tsup.config.ts` entry.
+export * from "./types/index.js"
 export * from "./core/index.js"
 export * from "./plugins/webllm/index.js"
 export * from "./plugins/ollama/index.js"
