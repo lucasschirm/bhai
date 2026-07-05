@@ -24,9 +24,18 @@
 // one kernel directory; the behavioral contract is unchanged.
 
 import Ajv, { type ErrorObject } from "ajv"
+import { ToolRegistry } from "../tools/registry.js"
 import type { JSONSchema } from "../types/content.js"
 import type { EmitResult, Unsubscribe } from "../types/events.js"
+import type {
+	BHAIDriver,
+	BHAIToolDefinition,
+	ModelInfo,
+	ToolExecute,
+	ToolFilter,
+} from "../types/index.js"
 import { type ToolRegistrar, getPluginMetadata } from "./decorators.js"
+import { DriverRegistry } from "./drivers.js"
 import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
 
 // `ajv` is chosen as the JSON Schema validator for TASK_0006's config step
@@ -262,32 +271,40 @@ export class BHAI {
 	private readonly resolvedConfig: Map<string, Record<string, unknown>> = new Map()
 
 	/**
-	 * Temporary in-memory backing store for the {@link ToolRegistrar} seam
-	 * (TASK_0007). TASK_0008 replaces this stub with the real tool registry;
-	 * until then, `@Tool`-decorated methods register here so the decorator
-	 * mechanism is fully exercised. Tools are keyed by name; last
-	 * registration wins (matches the eventual `addTool` semantics).
+	 * The tool registry (§ 9.2) — the single in-process store for every callable
+	 * tool BHAI knows about. Wired up by TASK_0008; backs `addTool`/
+	 * `removeTool`/`listTools` and the {@link toolRegistrar} seam. Fires
+	 * `tool.registered`/`tool.removed` (§ 8.1) through the framework
+	 * {@link EventBus}.
 	 */
-	private readonly tools: Map<
-		string,
-		{ name: string; schema: JSONSchema; execute: (...args: unknown[]) => unknown }
-	> = new Map()
+	private readonly toolRegistry: ToolRegistry = new ToolRegistry(this.bus)
 
 	/**
 	 * The {@link ToolRegistrar} seam exposed to decorator-generated `setup()`
 	 * functions (TASK_0007, § 7.2 form 3). `@Tool`-decorated methods register
 	 * against this object via `bh.toolRegistrar.register(...)`.
 	 *
-	 * SEAM NOTE: this is a temporary stub satisfying the `ToolRegistrar`
-	 * interface until TASK_0008 lands the real tool registry. TASK_0008 may
-	 * swap the backing implementation (e.g. delegate to `addTool`) without
-	 * touching `decorators.ts` — only this property's initializer changes.
+	 * TASK_0008 wires this to the real {@link ToolRegistry}: `register(...)`
+	 * delegates to `toolRegistry.register(...)`, which funnels through
+	 * `addTool`'s sugar form (defaulting `description` to `''`). The
+	 * `ToolRegistrar` interface in `decorators.ts` is unchanged — only the
+	 * backing implementation swapped from the temporary in-memory stub to the
+	 * real registry.
 	 */
 	readonly toolRegistrar: ToolRegistrar = {
 		register: (toolDef) => {
-			this.tools.set(toolDef.name, toolDef)
+			this.toolRegistry.register(toolDef)
 		},
 	}
+
+	/**
+	 * The driver registry (§ 10.1) — the kernel-side store of model-provider
+	 * drivers. Wired up by TASK_0009; backs `addDriver`/`listModels`. Fires
+	 * `driver.registered` (§ 8.1) through the framework {@link EventBus}. The
+	 * `modelSource` plugin-hook half of `listModels()`'s merge is TASK_0015's
+	 * responsibility — see the seam comment inside {@link DriverRegistry.listModels}.
+	 */
+	private readonly driverRegistry: DriverRegistry = new DriverRegistry(this.bus)
 
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
@@ -439,29 +456,73 @@ export class BHAI {
 		throw new Error("bh.loadConversation(): not implemented — see TASK_0023")
 	}
 
-	/** TODO(TASK_0008): tool registry (§ 9). */
-	addTool(): void {
-		throw new Error("bh.addTool(): not implemented — see TASK_0008")
+	/**
+	 * Register a tool — object form (§ 6, § 9.1). Validates `def.name`, stores
+	 * the definition, and fires `tool.registered` with `{ tool: def }`.
+	 *
+	 * Implemented by TASK_0008 as a thin delegation to the {@link ToolRegistry}.
+	 */
+	addTool(def: BHAIToolDefinition): void
+	/**
+	 * Register a tool — sugar form (§ 9.1 notes). `parameters` is an alias for
+	 * `inputSchema`; the stored record is
+	 * `{ name, description: '', inputSchema: parameters, execute }`. See
+	 * {@link ToolRegistry.addTool}'s sugar-overload doc for the
+	 * `description: ''` assumption.
+	 */
+	addTool(name: string, parameters: JSONSchema, execute: ToolExecute): void
+	addTool(
+		defOrName: BHAIToolDefinition | string,
+		parameters?: JSONSchema,
+		execute?: ToolExecute,
+	): void {
+		if (typeof defOrName === "string") {
+			this.toolRegistry.addTool(defOrName, parameters as JSONSchema, execute as ToolExecute)
+		} else {
+			this.toolRegistry.addTool(defOrName)
+		}
 	}
 
-	/** TODO(TASK_0008): tool registry (§ 9). */
-	removeTool(): void {
-		throw new Error("bh.removeTool(): not implemented — see TASK_0008")
+	/**
+	 * Remove a tool by name (§ 6, § 9.1). Silent no-op if the name was never
+	 * registered. Fires `tool.removed` with `{ tool }` when a removal actually
+	 * occurs. Implemented by TASK_0008.
+	 */
+	removeTool(name: string): void {
+		this.toolRegistry.removeTool(name)
 	}
 
-	/** TODO(TASK_0008): tool registry (§ 9). */
-	listTools(): never {
-		throw new Error("bh.listTools(): not implemented — see TASK_0008")
+	/**
+	 * Snapshot of registered tool definitions (§ 6, § 9.2 — semantically
+	 * `tools/list`). The `filter?` parameter's full § 9.5 semantics are owned
+	 * by TASK_0017's `resolveAvailableTools`; this method implements only a
+	 * minimal subset (identity + name allow/deny + tag include/exclude) for
+	 * signature compatibility. See {@link ToolRegistry.listTools} for the
+	 * scope boundary. Implemented by TASK_0008.
+	 */
+	listTools(filter?: ToolFilter): BHAIToolDefinition[] {
+		return this.toolRegistry.listTools(filter)
 	}
 
-	/** TODO(TASK_0009): driver registry (§ 10). */
-	addDriver(): void {
-		throw new Error("bh.addDriver(): not implemented — see TASK_0009")
+	/**
+	 * Register a model-provider driver (§ 6, § 10.1). Inserts (or replaces)
+	 * the entry under `driver.id` and fires `driver.registered` with
+	 * `{ driver }`. Implemented by TASK_0009.
+	 */
+	addDriver(driver: BHAIDriver): void {
+		this.driverRegistry.addDriver(driver)
 	}
 
-	/** TODO(TASK_0009): merged model list from drivers + modelSource hooks (§ 10). */
-	async listModels(): Promise<never> {
-		throw new Error("bh.listModels(): not implemented — see TASK_0009")
+	/**
+	 * Merged model catalogue from every registered driver (§ 6, § 10.1).
+	 *
+	 * TASK_0009 implements only the driver half of the merge. The
+	 * `modelSource` plugin-hook half (§ 6 line 189: "merged: drivers +
+	 * modelSource hooks") is TASK_0015's responsibility — see the
+	 * `TODO(TASK_0015)` seam inside {@link DriverRegistry.listModels}.
+	 */
+	async listModels(): Promise<ModelInfo[]> {
+		return this.driverRegistry.listModels()
 	}
 
 	/** TODO(TASK_0032): one-shot LLM call detached from any conversation (§ 6). */

@@ -18,8 +18,22 @@ export type {
 } from "./model.js"
 export type { EmitResult, Unsubscribe } from "./events.js"
 export type {
+	BHAIDriver,
 	ChatRequest,
 	DriverEvent,
 	GenerationParams,
 	ToolWireDefinition,
 } from "./driver.js"
+// Tool types were not landed by TASK_0002 before TASK_0008 started; TASK_0008
+// added them in `./tool.js` on TASK_0002's behalf (see the coordination note
+// at the top of that file). Re-exported here so the barrel stays the single
+// import point for downstream tasks.
+export type {
+	BHAIConversation,
+	BHAIToolDefinition,
+	Icon,
+	ToolAnnotations,
+	ToolExecute,
+	ToolFilter,
+	ToolInvocation,
+} from "./tool.js"

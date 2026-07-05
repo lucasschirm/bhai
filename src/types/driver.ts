@@ -1,13 +1,20 @@
 // Driver-interface type declarations (§ 10.1).
 // Types only — no runtime logic. See TASK_0002 for the scope contract.
 //
-// NOTE: the full `BHAIDriver` interface (with `listModels`, `capabilities`,
-// `chat`, optional `embed`) is TASK_0009's responsibility — this file supplies
-// only the shapes that cross the kernel/driver boundary and that other layers
-// (kernel, conversation) need to reference by name.
+// CROSS-TASK COORDINATION NOTE: TASK_0002 originally scoped the full
+// `BHAIDriver` interface (with `listModels`, `capabilities`, `chat`, optional
+// `embed`) as TASK_0009's responsibility and supplied only the shapes that
+// cross the kernel/driver boundary (`GenerationParams`, `DriverEvent`,
+// `ChatRequest`, `ToolWireDefinition`). TASK_0009 adds `BHAIDriver` here — in
+// the canonical types home, alongside the other driver types — per TASK_0009's
+// "if TASK_0002 has not yet declared `BHAIDriver`, this task must add it there
+// ... and explicitly flag in a code comment that it did so on TASK_0002's
+// behalf" instruction. The shape matches ARCHITECTURE.md § 10.1 lines 753-767
+// verbatim, including `embed?` being optional.
 
 import type { JSONSchema } from "./content.js"
 import type { BHAIMessage } from "./message.js"
+import type { DriverCapabilities, ModelInfo, Usage } from "./model.js"
 
 /**
  * Generation overrides passed through `ChatRequest.params` (§ 10.1).
@@ -77,4 +84,44 @@ export interface ChatRequest {
 	tools?: ToolWireDefinition[]
 	params?: GenerationParams
 	signal: AbortSignal
+}
+
+/**
+ * The driver interface every model provider implements (§ 10.1). The kernel
+ * treats WebLLM, Ollama, and any future provider identically via this one
+ * `chat()`/`listModels()`/`capabilities()` surface — "transport-agnostic
+ * streaming" per #1338.
+ *
+ * Added by TASK_0009 on TASK_0002's behalf (see the file-header coordination
+ * note). The shape matches § 10.1 lines 753-767 verbatim, including `embed?`
+ * being optional — only drivers whose `capabilities(model).embeddings === true`
+ * are expected to implement it.
+ */
+export interface BHAIDriver {
+	/** Stable driver identifier, e.g. `'webllm'`, `'ollama'`. */
+	id: string
+	/**
+	 * Static or probed model catalogue; merged with plugins' `modelSource`
+	 * hooks by the driver registry (TASK_0009) and `modelSource` resolution
+	 * (TASK_0015).
+	 */
+	listModels(): Promise<ModelInfo[]>
+	/** Per-model capability flags (§ 10.1, § 10.5). */
+	capabilities(model: string): DriverCapabilities
+	/**
+	 * One LLM call. Unified streaming: an async iterable of typed
+	 * {@link DriverEvent}s. Non-streaming providers yield a single `delta` +
+	 * `done`.
+	 */
+	chat(request: ChatRequest): AsyncIterable<DriverEvent>
+	/**
+	 * Optional embedding generation for models whose `capabilities(model)`
+	 * reports `embeddings: true` — the portable substrate RAG plugins
+	 * index/query with (§ 11.8).
+	 */
+	embed?(request: {
+		model: string
+		input: string[]
+		signal?: AbortSignal
+	}): Promise<{ embeddings: number[][]; usage?: Usage }>
 }
