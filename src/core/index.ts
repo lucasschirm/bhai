@@ -4,4 +4,11 @@
 // ENVIRONMENT BOUNDARY (§ 5): files under src/core/** depend only on web-standard
 // APIs (fetch, AbortController, ReadableStream/async iterables, crypto.randomUUID,
 // structuredClone). No Node built-ins, no DOM, no imports from src/plugins/**.
-export {}
+export {
+	BHAI,
+	type BHAIHostOptions,
+	type BHAIPlugin,
+	type BHAIPluginCapabilities,
+	type BHAIPluginFactory,
+	type BHAIPluginLike,
+} from "./bhai.js"
