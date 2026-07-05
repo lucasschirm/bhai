@@ -11,6 +11,7 @@ export {
 	type BHAIPluginCapabilities,
 	type BHAIPluginFactory,
 	type BHAIPluginLike,
+	type ConfigChangedPayload,
 } from "./bhai.js"
 export {
 	EventBus,
@@ -18,3 +19,12 @@ export {
 	type DispatchOptions,
 	type Handler,
 } from "./event-bus.js"
+export {
+	BHAI_PLUGIN_META,
+	Plugin,
+	On,
+	Tool,
+	type BHPlugin,
+	type PluginMetadata,
+	type ToolRegistrar,
+} from "./decorators.js"

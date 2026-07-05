@@ -1,17 +1,21 @@
 // BHAI kernel class — the framework entry point (ARCHITECTURE.md § 6).
 //
-// Scope of THIS file (TASK_0003): only the constructor and `use()` are
-// implemented, and only plugin forms 1 (bare factory function) and 2
-// (capability object) are normalized (§ 7.2). Every other § 6 method is
+// Scope of THIS file: the constructor and `use()` (TASK_0003, plugin forms 1
+// & 2; form 3 added by TASK_0007), `on()`/`emit()` (TASK_0004), `init()`/
+// `dispose()` lifecycle (TASK_0005), and the plugin-configuration contract
+// (TASK_0006, § 7.4 — `declareConfig`/`setConfig`/`getConfig` plus the
+// validation-and-defaulting step inside `init()`). Every other § 6 method is
 // stubbed with a `// TODO(TASK_XXXX)` comment naming the owning task; calling
 // a stub throws so accidental use surfaces immediately rather than silently
-// no-op'ing. Form 3 (decorator-stamped class instances, § 7.2 lines 282-316)
-// is intentionally NOT detected here — TASK_0007 extends this same `use()`
-// method with that form.
+// no-op'ing.
 //
 // ENVIRONMENT BOUNDARY (§ 5): this file uses only web-standard APIs.
 // `crypto.randomUUID()` is the only external surface touched, and it is
 // available in every supported runtime (browsers, Node ≥ 19, Deno, Bun).
+// `ajv` (the JSON Schema validator used by TASK_0006's config step) is a
+// pure-JS dependency with no environment-specific bindings, so importing it
+// here does not violate the "web-standard APIs only" rule — it runs
+// identically in every supported runtime.
 //
 // PATH NOTE: TASK_0003 specifies `bhai/src/kernel/bhai.ts`, but the package
 // layout already established by TASK_0002 places the kernel under
@@ -19,9 +23,25 @@
 // `package.json`). This file follows the existing repo convention to keep
 // one kernel directory; the behavioral contract is unchanged.
 
+import Ajv, { type ErrorObject } from "ajv"
 import type { JSONSchema } from "../types/content.js"
 import type { EmitResult, Unsubscribe } from "../types/events.js"
+import { type ToolRegistrar, getPluginMetadata } from "./decorators.js"
 import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
+
+// `ajv` is chosen as the JSON Schema validator for TASK_0006's config step
+// (§ 7.4) over alternatives (zod-to-JSON-Schema bridges, a hand-rolled
+// minimal validator) because:
+//  - it directly validates JSON Schema, the dialect BHAI already standardizes
+//    on for tool `inputSchema`/`outputSchema` (§ 9.1, 2020-12 dialect);
+//  - it is widely used and battle-tested in the JS/TS ecosystem;
+//  - it needs no schema-authoring-library lock-in (unlike zod, which would
+//    require plugin authors to learn a second schema DSL just for config).
+// This is a RETROACTIVE runtime dependency addition: TASK_0001's scaffolding
+// anticipated only dev tooling. `ajv` is therefore declared in
+// `package.json` under `dependencies` (not `devDependencies`) by TASK_0006,
+// and is noted as such in the task's commit/PR description rather than
+// silently introduced as if it had always been there.
 
 /**
  * Host-supplied constructor options for {@link BHAI}.
@@ -31,12 +51,32 @@ import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
  * in TASK_0003.
  */
 export interface BHAIHostOptions {
-	/** Per-plugin configuration values. Wired up fully by TASK_0006. */
-	config?: Record<string, unknown>
+	/**
+	 * Per-plugin configuration values, keyed by plugin name (§ 7.4). Each entry
+	 * is equivalent to calling `bh.setConfig(pluginName, values)` before
+	 * `bh.init()` runs. Wired up fully by TASK_0006.
+	 */
+	config?: Record<string, Record<string, unknown>>
 	/** Qualified `'<driver>/<model>'` ref. Wired up by TASK_0009 / TASK_0023. */
 	defaultModel?: string
 	/** Base system prompt injected into conversation preambles (TASK_0023 / § 11.6). */
 	systemPrompt?: string
+}
+
+/**
+ * Payload of the `config.changed` framework event (§ 7.4 closing bullet).
+ *
+ * `config.*` is a reserved namespace prefix (TASK_0004's reserved list), so
+ * this event is fired through the bus's internal `dispatch()` bypass, never
+ * via the public `emit()`. It fires only when `setConfig()` is called AFTER
+ * `bh.init()` has completed — pre-init `setConfig()` calls merely accumulate
+ * initial values and do not constitute a "change" to a live config.
+ */
+export interface ConfigChangedPayload {
+	/** The plugin whose config was updated. */
+	pluginName: string
+	/** The plugin's new merged (host-supplied + defaulted) config values. */
+	values: Record<string, unknown>
 }
 
 /**
@@ -89,10 +129,20 @@ export interface BHAIPluginCapabilities {
 }
 
 /**
- * Anything `use()` accepts — form 1 (factory) or form 2 (capability object).
- * Form 3 (decorator-stamped class instance) is added by TASK_0007.
+ * Anything `use()` accepts — form 1 (factory), form 2 (capability object),
+ * or form 3 (a `@Plugin`-decorated class instance, § 7.2 lines 282-316).
+ *
+ * `BHPlugin` is an empty marker interface (see `decorators.ts`), so
+ * structurally it is satisfied by any object — the union therefore does not
+ * narrow the type, but it documents that decorated instances are a legal
+ * `use()` input. Form-3 instances are detected at runtime by
+ * `getPluginMetadata()` reading the {@link BHAI_PLUGIN_META} symbol stamped
+ * by `@Plugin`, not by TypeScript's structural typing.
  */
-export type BHAIPluginLike = BHAIPluginFactory | BHAIPluginCapabilities
+export type BHAIPluginLike =
+	| BHAIPluginFactory
+	| BHAIPluginCapabilities
+	| import("./decorators.js").BHPlugin
 
 /**
  * The canonical internal shape every plugin form normalizes to (§ 7.1).
@@ -175,18 +225,92 @@ export class BHAI {
 	 */
 	private readonly bus: EventBus = new EventBus()
 
+	// ---------------------------------------------------------------------------
+	// Plugin configuration state (TASK_0006, § 7.4).
+	//
+	// Two maps keyed by plugin name: declared schemas (from the `configSchema`
+	// capability key or `declareConfig()` — both populate the same map) and
+	// host-supplied values (from the constructor `config` option and
+	// `setConfig()` calls). At `init()` time the two are merged + validated +
+	// defaulted into `resolvedConfig`, which is what `getConfig()` returns.
+	// The kernel never persists any of this — it stays storage-free per § 7.4.
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Schemas declared by plugins, keyed by plugin name. Populated either by
+	 * `use()` reading a form-2 capability object's `configSchema` key, or by
+	 * `declareConfig()` from inside a plugin's `setup()`/`initialize()` body.
+	 * Both paths write into this same map so the validation step has one place
+	 * to read from.
+	 */
+	private readonly configSchemas: Map<string, JSONSchema> = new Map()
+
+	/**
+	 * Host-supplied config values, keyed by plugin name. Populated from the
+	 * constructor `config` option (at construction time) and from
+	 * `setConfig()` (which shallow-merges into any existing entry — see
+	 * `setConfig`'s assumption comment). Pre-init calls accumulate; post-init
+	 * calls additionally fire `config.changed`.
+	 */
+	private readonly configValues: Map<string, Record<string, unknown>> = new Map()
+
+	/**
+	 * Validated + defaulted config per plugin, populated by the validation
+	 * step inside `init()`. `getConfig()` reads from here and throws if
+	 * `init()` has not yet completed (no validated value exists yet).
+	 */
+	private readonly resolvedConfig: Map<string, Record<string, unknown>> = new Map()
+
+	/**
+	 * Temporary in-memory backing store for the {@link ToolRegistrar} seam
+	 * (TASK_0007). TASK_0008 replaces this stub with the real tool registry;
+	 * until then, `@Tool`-decorated methods register here so the decorator
+	 * mechanism is fully exercised. Tools are keyed by name; last
+	 * registration wins (matches the eventual `addTool` semantics).
+	 */
+	private readonly tools: Map<
+		string,
+		{ name: string; schema: JSONSchema; execute: (...args: unknown[]) => unknown }
+	> = new Map()
+
+	/**
+	 * The {@link ToolRegistrar} seam exposed to decorator-generated `setup()`
+	 * functions (TASK_0007, § 7.2 form 3). `@Tool`-decorated methods register
+	 * against this object via `bh.toolRegistrar.register(...)`.
+	 *
+	 * SEAM NOTE: this is a temporary stub satisfying the `ToolRegistrar`
+	 * interface until TASK_0008 lands the real tool registry. TASK_0008 may
+	 * swap the backing implementation (e.g. delegate to `addTool`) without
+	 * touching `decorators.ts` — only this property's initializer changes.
+	 */
+	readonly toolRegistrar: ToolRegistrar = {
+		register: (toolDef) => {
+			this.tools.set(toolDef.name, toolDef)
+		},
+	}
+
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
+		// Seed host-supplied config values from the constructor option. Each
+		// entry is equivalent to a pre-init `setConfig(pluginName, values)`
+		// call — last-write-wins per top-level key is irrelevant here since
+		// each plugin name appears at most once in the constructor option.
+		if (this.options.config) {
+			for (const [pluginName, values] of Object.entries(this.options.config)) {
+				this.configValues.set(pluginName, { ...values })
+			}
+		}
 	}
 
 	/**
-	 * Register a plugin (§ 7). Accepts form 1 (bare factory function) or
-	 * form 2 (capability object); form 3 is added by TASK_0007.
+	 * Register a plugin (§ 7). Accepts form 1 (bare factory function), form 2
+	 * (capability object), or form 3 (a `@Plugin`-decorated class instance,
+	 * TASK_0007).
 	 *
-	 * Normalizes either form into the canonical {@link BHAIPlugin} shape,
-	 * runs `setup()` immediately (§ 7.3 step 1), and returns `this` for
-	 * chaining. Idempotent per *explicit* plugin name: a second `use()` with
-	 * the same `name` is a silent no-op (its `setup`/capabilities are never
+	 * Normalizes any form into the canonical {@link BHAIPlugin} shape, runs
+	 * `setup()` immediately (§ 7.3 step 1), and returns `this` for chaining.
+	 * Idempotent per *explicit* plugin name: a second `use()` with the same
+	 * `name` is a silent no-op (its `setup`/capabilities are never
 	 * registered). Unnamed form-1 factories each get a distinct auto-name
 	 * and are never treated as duplicates.
 	 */
@@ -199,6 +323,15 @@ export class BHAI {
 		}
 		this.plugins.push(normalized)
 		this.registeredNames.add(normalized.name)
+		// TASK_0006 (§ 7.4): a form-2 capability object may declare a
+		// `configSchema`. Record it in the schema map at use() time so the
+		// init()-time validation step has every declared schema available
+		// regardless of when the plugin was registered. `declareConfig()`
+		// (form-1 factories, which have no capability object) populates this
+		// same map from inside `setup()`/`initialize()`.
+		if (normalized.capabilities?.configSchema) {
+			this.configSchemas.set(normalized.name, normalized.capabilities.configSchema)
+		}
 		// § 7.3 step 1: setup() runs immediately at use() time. We do not
 		// await it; full async-ordering guarantees are TASK_0005's concern.
 		// For form 1, `setup` IS the factory, so this is the call that
@@ -268,6 +401,18 @@ export class BHAI {
 				await hook({ bh: this })
 			}
 		}
+
+		// TASK_0006 (§ 7.4): validate + default plugin config HERE — after all
+		// `initialize` hooks have run (a plugin's `initialize` hook might be
+		// what calls `declareConfig()` for a form-1 factory plugin, so schemas
+		// may not all be registered until this point) and BEFORE the
+		// `initialize` framework event fires below. This matches § 8.5's
+		// overall "hooks → resolution → event" sequencing pattern: config
+		// resolution is a resolution step, so it sits with the other
+		// resolution steps (modelSource/getMcps above) between hooks and the
+		// event. Throws synchronously (rejecting the init() promise) on the
+		// first schema violation, with a path-qualified message.
+		this.resolveAllConfig()
 
 		// TODO(TASK_0015): resolve `modelSource`/`getMcps` hooks here, in
 		// registration order, merging results into the tool/driver/MCP
@@ -363,6 +508,159 @@ export class BHAI {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Plugin configuration (TASK_0006, § 7.4).
+	//
+	// The kernel stays storage-free: it standardizes only the *contract*
+	// (declare a JSON Schema, supply values, validate+default at init() time,
+	// read via getConfig, notify live edits via `config.changed`). Where
+	// values persist (files, env, database, UI) is the host's concern.
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Imperative alternative to the `configSchema` capability key, for
+	 * factory-function (form 1) plugins which have no capability object to
+	 * attach `configSchema` to. Calling this from inside a plugin's
+	 * `setup()`/`initialize()` body registers the schema in the same internal
+	 * map the capability-key path populates, so the init()-time validation
+	 * step treats both declaration channels identically (§ 7.4).
+	 *
+	 * Calling this after `bh.init()` has completed is allowed (a plugin may
+	 * declare its schema late); the newly-declared schema is validated
+	 * immediately against any already-supplied values for that plugin name and
+	 * the result is stored in `resolvedConfig`, so a post-init `declareConfig`
+	 * followed by `getConfig` works without a second `init()` call (which
+	 * would be a no-op anyway).
+	 */
+	declareConfig(pluginName: string, schema: JSONSchema): void {
+		this.configSchemas.set(pluginName, schema)
+		// If init() has already run, resolve this plugin's config immediately
+		// against whatever values have been supplied so far, so getConfig()
+		// works right away without requiring a (no-op) second init() call.
+		if (this.initialized) {
+			this.resolveConfig(pluginName, schema)
+		}
+	}
+
+	/**
+	 * Host-supplied config values for a plugin, keyed by plugin name (§ 7.4).
+	 *
+	 * MERGE SEMANTICS (explicit assumption — the spec does not say): this
+	 * shallow-merges `values` into any previously-supplied values for that
+	 * plugin name at the top level (`this.configValues[pluginName] = {
+	 * ...this.configValues[pluginName], ...values }`), rather than replacing
+	 * them wholesale. This matches the general shallow-merge convention used
+	 * elsewhere in the spec (e.g. event patches, § 8.2 rule 2) and lets a host
+	 * update one config key without re-supplying every other key.
+	 *
+	 * If called AFTER `bh.init()` has completed, the merged values are
+	 * re-validated + re-defaulted against the plugin's declared schema and the
+	 * `config.changed` framework event is fired (via the bus's internal
+	 * `dispatch()`, since `config.*` is a reserved namespace prefix) with
+	 * `{ pluginName, values }`. Pre-init calls merely accumulate values and
+	 * do NOT fire `config.changed` — they are not "changes" to a live config,
+	 * just initial-value accumulation before validation runs at init() time.
+	 */
+	setConfig(pluginName: string, values: Record<string, unknown>): void {
+		const prev = this.configValues.get(pluginName) ?? {}
+		this.configValues.set(pluginName, { ...prev, ...values })
+		if (this.initialized) {
+			const schema = this.configSchemas.get(pluginName)
+			// Only re-validate + fire `config.changed` if the plugin declared a
+			// schema. A plugin with no schema has no "config" to change in the
+			// § 7.4 sense — its values are just unvalidated host state.
+			if (schema) {
+				this.resolveConfig(pluginName, schema)
+				const resolved = this.resolvedConfig.get(pluginName) ?? {}
+				// `config.*` is reserved (TASK_0004's RESERVED_PREFIXES), so
+				// this must go through `dispatch()` (the kernel bypass), not
+				// the public `emit()`. The dispatch is fire-and-forget: the
+				// spec describes `config.changed` as a notification, and
+				// `setConfig` is synchronous, so we do not await it.
+				void this.bus.dispatch<ConfigChangedPayload>("config.changed", {
+					pluginName,
+					values: resolved,
+				})
+			}
+		}
+	}
+
+	/**
+	 * Validated (and defaulted) config for a plugin (§ 7.4). Returns the
+	 * merged object of host-supplied values over schema `default` keywords,
+	 * after validation at `init()` time.
+	 *
+	 * PRECONDITION: `bh.init()` must have completed. Throws if called before
+	 * that, since values are not validated/defaulted until init() runs —
+	 * returning unvalidated/undefaulted raw values would silently violate the
+	 * "validated during init()" contract.
+	 *
+	 * RETURNS `undefined` if the plugin declared no `configSchema` (explicit
+	 * assumption — the spec does not spell this out): there is no schema to
+	 * validate/default against, so there is no principled "resolved config" to
+	 * hand back. `undefined` signals "this plugin declared no config contract"
+	 * distinctly from "this plugin's config is an empty object".
+	 */
+	getConfig<T = unknown>(pluginName: string): T {
+		if (!this.initialized) {
+			throw new Error(
+				`getConfig('${pluginName}') called before bh.init() completed — config is not yet validated/defaulted.`,
+			)
+		}
+		const schema = this.configSchemas.get(pluginName)
+		if (!schema) {
+			// No declared schema → no resolved config. See the TSDoc assumption.
+			return undefined as T
+		}
+		return (this.resolvedConfig.get(pluginName) ?? {}) as T
+	}
+
+	/**
+	 * Validate + default one plugin's config against its declared schema and
+	 * store the result in `resolvedConfig`. Throws on the first schema
+	 * violation with a path-qualified message of the form
+	 * `"<pluginName>.config.<propertyPath>: expected <expectedType>, got <actualType>"`.
+	 *
+	 * Uses `ajv` with `useDefaults: true` so schema `default` keywords are
+	 * applied to absent properties during validation (step 2 of the
+	 * algorithm), then a small formatter translates `ajv`'s `ErrorObject`s
+	 * into the spec's exact message shape.
+	 */
+	private resolveConfig(pluginName: string, schema: JSONSchema): void {
+		const supplied = this.configValues.get(pluginName) ?? {}
+		// `useDefaults: true` fills in absent properties from schema `default`
+		// keywords during validation. We validate a shallow clone so the
+		// original host-supplied values are not mutated.
+		const data: Record<string, unknown> = { ...supplied }
+		const validate = new Ajv({ useDefaults: true, allErrors: false })
+		const validator = validate.compile(schema)
+		const ok = validator(data)
+		if (!ok) {
+			const errs = validator.errors ?? []
+			throw new Error(formatAjvError(pluginName, errs, data))
+		}
+		this.resolvedConfig.set(pluginName, data)
+	}
+
+	/**
+	 * Run {@link resolveConfig} for every declared config schema, in schema
+	 * declaration order (the order schemas were inserted into `configSchemas`,
+	 * which is `use()`-registration order for capability-key schemas and
+	 * call order for `declareConfig()`). Called once from `init()` after all
+	 * `initialize` hooks have run. Schemas with no corresponding registered
+	 * plugin are still validated — a form-1 factory plugin declares its schema
+	 * under an arbitrary name of its choosing (not its auto-generated plugin
+	 * name), so iterating the schema map rather than the plugin list is what
+	 * makes `declareConfig('factory-plugin', ...)` + `getConfig('factory-plugin')`
+	 * work. Plugins/schemas with no declared schema are skipped — nothing to
+	 * validate, and `getConfig()` returns `undefined` for them.
+	 */
+	private resolveAllConfig(): void {
+		for (const [pluginName, schema] of this.configSchemas) {
+			this.resolveConfig(pluginName, schema)
+		}
+	}
+
+	// ---------------------------------------------------------------------------
 	// Test-only accessors. These exist so TASK_0003's tests can assert internal
 	// invariants (plugin count, stored options) without exposing a wider
 	// public API. They are intentionally minimal and not part of § 6.
@@ -391,15 +689,75 @@ export class BHAI {
 	 * Detect which supported form `plugin` is and normalize it to a
 	 * {@link BHAIPlugin}. Throws synchronously for anything else, including
 	 * capability objects with unrecognized keys.
+	 *
+	 * Form 3 (decorated instance, TASK_0007) is checked FIRST among the
+	 * object branches: a decorated instance is also `typeof plugin ===
+	 * 'object'`, so it must be detected before the generic capability-object
+	 * branch — otherwise it would be misinterpreted as a plain capability
+	 * object and rejected by the key-allowlist check (decorated instances do
+	 * not carry `initialize`/`tools`/etc. as own enumerable keys in the
+	 * capability-object sense).
 	 */
 	private normalize(plugin: BHAIPluginLike): BHAIPlugin {
 		if (typeof plugin === "function") {
-			return this.normalizeFactory(plugin)
+			return this.normalizeFactory(plugin as BHAIPluginFactory)
 		}
 		if (typeof plugin === "object" && plugin !== null) {
+			// Form 3 check before form 2 — see method doc.
+			const meta = getPluginMetadata(plugin)
+			if (meta) {
+				return this.normalizeDecorated(plugin, meta)
+			}
 			return this.normalizeCapabilities(plugin as BHAIPluginCapabilities)
 		}
-		throw new Error("bh.use(): plugin must be a function or a capability object")
+		throw new Error(
+			"bh.use(): plugin must be a function, a capability object, or a @Plugin-decorated instance",
+		)
+	}
+
+	/**
+	 * Form 3: a `@Plugin`-decorated class instance (§ 7.2 lines 282-316,
+	 * TASK_0007). Builds a `setup(bh)` that subscribes each `@On`-decorated
+	 * method via `bh.on(event, method.bind(instance))` and registers each
+	 * `@Tool`-decorated method via `bh.toolRegistrar.register(...)`. The
+	 * resulting `{ name, setup }` is the exact same canonical shape forms 1
+	 * and 2 produce — there is no separate "decorated plugin" storage path.
+	 *
+	 * A `@On('initialize')` method is functionally indistinguishable from a
+	 * capability-object `initialize` hook once normalized: `setup` calls
+	 * `bh.on('initialize', ...)`, and `'initialize'` is a reserved framework
+	 * event only the kernel's `dispatch()` fires (TASK_0004), so the method
+	 * receives the `initialize` event exactly when `bh.init()` fires it — no
+	 * special-casing in `init()` itself.
+	 */
+	private normalizeDecorated(
+		instance: object,
+		meta: {
+			name: string
+			onHandlers: Array<{ methodName: string; event: string }>
+			tools: Array<{ methodName: string; name: string; schema: JSONSchema }>
+		},
+	): BHAIPlugin {
+		const record = instance as Record<string, unknown>
+		const setup = (bh: BHAI): void => {
+			for (const { methodName, event } of meta.onHandlers) {
+				const fn = record[methodName]
+				if (typeof fn === "function") {
+					bh.on(event, fn.bind(instance) as Handler<unknown>)
+				}
+			}
+			for (const { methodName, name, schema } of meta.tools) {
+				const fn = record[methodName]
+				if (typeof fn === "function") {
+					bh.toolRegistrar.register({
+						name,
+						schema,
+						execute: fn.bind(instance) as (...args: unknown[]) => unknown,
+					})
+				}
+			}
+		}
+		return { name: meta.name, setup }
 	}
 
 	/** Form 1: bare factory function. Auto-generates a unique name. */
@@ -433,4 +791,84 @@ export class BHAI {
 		const setup = (_bh: BHAI): void => {}
 		return { name, setup, capabilities: cap }
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ajv error → spec-message formatter (TASK_0006).
+//
+// `ajv`'s raw `ErrorObject`s don't match the exact message shape § 7.4's
+// example implies (`"<pluginName>.config.<propertyPath>: expected <expectedType>,
+// got <actualType>"`). This helper translates the first error into that shape.
+// It is module-local (not exported) since it is an implementation detail of
+// `resolveConfig`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate the first of `ajv`'s validation errors into a path-qualified
+ * message of the form `"<pluginName>.config.<propertyPath>: expected
+ * <expectedType>, got <actualType>"`. Falls back to a best-effort message
+ * using `ajv`'s own `message` for keywords this formatter doesn't special-case.
+ */
+function formatAjvError(
+	pluginName: string,
+	errors: ErrorObject[],
+	data: Record<string, unknown>,
+): string {
+	const err = errors[0]
+	const propertyPath = ajvInstancePathToDotPath(err.instancePath)
+	const qualifiedPath = propertyPath
+		? `${pluginName}.config.${propertyPath}`
+		: `${pluginName}.config`
+
+	if (err.keyword === "type") {
+		const expected = formatExpectedType(err.params)
+		const actual = formatActualType(lookupByPath(data, propertyPath))
+		return `${qualifiedPath}: expected ${expected}, got ${actual}`
+	}
+	if (err.keyword === "required") {
+		// `params.missingProperty` is the unqualified property name.
+		const missing = (err.params as { missingProperty?: string }).missingProperty ?? "<unknown>"
+		return `${pluginName}.config.${missing}: expected present, got missing`
+	}
+	// Best-effort fallback for any other keyword (enum, minItems, etc.).
+	return `${qualifiedPath}: ${err.message ?? "validation failed"}`
+}
+
+/** Convert an `ajv` `instancePath` like `"/topK"` or `""` into `"topK"` or `""`. */
+function ajvInstancePathToDotPath(instancePath: string): string {
+	if (!instancePath) return ""
+	// ajv paths are JSON Pointer–ish: leading "/", properties separated by "/".
+	return instancePath.replace(/^\//, "").replace(/\//g, ".")
+}
+
+/**
+ * Look up the value at a dot-separated path inside `data`, returning it for
+ * `typeof`-based actual-type reporting. Returns `undefined` if any segment is
+ * absent (which itself reports as `"undefined"`).
+ */
+function lookupByPath(data: Record<string, unknown>, path: string): unknown {
+	if (!path) return data
+	let cur: unknown = data
+	for (const segment of path.split(".")) {
+		if (cur && typeof cur === "object" && segment in cur) {
+			cur = (cur as Record<string, unknown>)[segment]
+		} else {
+			return undefined
+		}
+	}
+	return cur
+}
+
+/** Format the expected type(s) from an ajv `type` keyword's `params`. */
+function formatExpectedType(params: ErrorObject["params"]): string {
+	const t = (params as { type?: string | string[] }).type
+	if (Array.isArray(t)) return t.join("|")
+	return t ?? "unknown"
+}
+
+/** Format the actual type of a value for the error message. */
+function formatActualType(value: unknown): string {
+	if (value === null) return "null"
+	if (Array.isArray(value)) return "array"
+	return typeof value
 }

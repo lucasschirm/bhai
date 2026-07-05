@@ -172,14 +172,14 @@ describe("BHAI.use — form rejection", () => {
 	it("throws on null", () => {
 		const bh = new BHAI()
 		expect(() => bh.use(null as unknown as never)).toThrow(
-			/must be a function or a capability object/,
+			/must be a function, a capability object, or a @Plugin-decorated instance/,
 		)
 	})
 
 	it("throws on a primitive", () => {
 		const bh = new BHAI()
 		expect(() => bh.use(42 as unknown as never)).toThrow(
-			/must be a function or a capability object/,
+			/must be a function, a capability object, or a @Plugin-decorated instance/,
 		)
 	})
 })
