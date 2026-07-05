@@ -1,22 +1,59 @@
 {
-	"name": "bhai",
-	"private": true,
+	"name": "@lucasschirm/bhai",
+	"version": "0.1.0",
 	"type": "module",
+	"license": "MIT",
+	"sideEffects": false,
+	"engines": {
+		"node": ">=20"
+	},
 	"packageManager": "pnpm@9.15.0",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": ["dist"],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./core": {
+			"types": "./dist/core/index.d.ts",
+			"import": "./dist/core/index.js"
+		},
+		"./plugins/webllm": {
+			"types": "./dist/plugins/webllm/index.d.ts",
+			"import": "./dist/plugins/webllm/index.js"
+		},
+		"./plugins/ollama": {
+			"types": "./dist/plugins/ollama/index.d.ts",
+			"import": "./dist/plugins/ollama/index.js"
+		},
+		"./plugins/mcp": {
+			"types": "./dist/plugins/mcp/index.d.ts",
+			"import": "./dist/plugins/mcp/index.js"
+		},
+		"./plugins/interop/pi": {
+			"types": "./dist/plugins/interop/pi/index.d.ts",
+			"import": "./dist/plugins/interop/pi/index.js"
+		},
+		"./plugins/interop/opencode": {
+			"types": "./dist/plugins/interop/opencode/index.d.ts",
+			"import": "./dist/plugins/interop/opencode/index.js"
+		}
+	},
 	"scripts": {
-		"build": "tsc -p tsconfig.json --noEmit",
-		"check": "pnpm lint && pnpm typecheck && pnpm test",
-		"format": "biome format --write .",
+		"build": "tsup",
+		"typecheck": "tsc --noEmit",
 		"lint": "biome check .",
+		"format": "biome format --write .",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"prepare": "husky"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "1.9.4",
-		"@types/node": "22.10.2",
 		"husky": "^9.1.7",
+		"tsup": "8.5.1",
 		"typescript": "5.7.2",
 		"vitest": "2.1.8"
 	}

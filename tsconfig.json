@@ -1,14 +1,23 @@
 {
+	// moduleResolution: "Bundler" is chosen over "NodeNext" because tsup handles
+	// bundling and this avoids NodeNext's mandatory explicit `.js` extension
+	// requirement on relative imports, which is friction-heavy for a from-scratch
+	// codebase. Relative re-exports in barrels still use `.js` for strict-Node-ESM
+	// compatibility of the shipped output.
+	//
+	// Native TC39 stage-3 decorators (ARCHITECTURE.md § 7.2 form 3) are the
+	// default when the legacy flags are absent. We deliberately do NOT set
+	// "experimentalDecorators" or "emitDecoratorMetadata" — do not add them.
 	"compilerOptions": {
 		"target": "ES2022",
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
 		"strict": true,
-		"noEmit": true,
+		"declaration": true,
+		"declarationMap": true,
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true,
-		"skipLibCheck": true,
-		"types": ["node", "vitest/globals"]
+		"skipLibCheck": true
 	},
-	"include": ["src", "test", "vitest.config.ts"]
+	"include": ["src"]
 }
