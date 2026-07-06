@@ -8,11 +8,12 @@ implementation documentation (`docs/`). The parent directory holds only the
 v0.1 design proposal (`ARCHITECTURE.md`) and the task breakdown (`tasks/`) —
 all code lives here.
 
-## Current state (TASK_0001–TASK_0012 complete)
+## Current state (TASK_0001–TASK_0022 complete)
 
-Phase 0 (foundations), Phase 1 (kernel core), and the first three tasks of
-Phase 2 (tool/driver/command registries + MCP client handshake/discovery/
-calls) are implemented. See `docs/PROGRESS.md` for the full task status.
+Phase 0 (foundations), Phase 1 (kernel core), Phase 2 (tool/driver/command
+registries + MCP client), and the first five tasks of Phase 3 (transport
+retry, WebLLM driver, Ollama driver, credential resolution, model selection)
+are implemented. See `docs/PROGRESS.md` for the full task status.
 
 Implemented:
 
@@ -35,10 +36,26 @@ Implemented:
 - **MCP client** (`src/plugins/mcp/`) — streamable-HTTP JSON-RPC 2.0,
   handshake, discovery, re-sync, `tools/call`, validation, timeouts,
   progress, cancellation.
+- **Transport retry** (`src/core/retry.ts`) — `callDriverWithRetry` wrapper,
+  `isRetriableError` classifier, `DEFAULT_RETRY_POLICY`, `request` lifecycle
+  events.
+- **WebLLM driver** (`src/plugins/webllm/`) — `BHAIDriver` implementation
+  wrapping an injected MLC `MLCEngine` instance. Browser/WebGPU-only.
+- **Ollama driver** (`src/plugins/ollama/`) — `BHAIDriver` implementation
+  backed entirely by web-standard `fetch`. NDJSON streaming, capabilities
+  cache, `embed()`. Works in any fetch-capable runtime.
+- **Credential resolution** (`src/core/credentials.ts`) —
+  `resolveCredentials()` three-tier chain (runtime value → `auth` hooks →
+  unauthenticated). `bh.getAuthHooks()` exposes registered resolvers.
+- **Model selection** (`src/core/models.ts`) — `parseModelRef`,
+  `resolveModelRef` (bare-id disambiguation), `listModels` (catalogue merge),
+  `resolveConversationModel` (four-tier resolution), `setModel` (switching
+  with deferred application + `model.changed` event). Error types:
+  `AmbiguousModelError`, `ModelNotFoundError`, `NoModelError`,
+  `ModelUnavailableError`.
 
-Not yet implemented: conversations/agent loop (Phase 4), concrete WebLLM/
-Ollama drivers (TASK_0019/0020), `addMcp()` public entry (TASK_0015),
-interop adapters (TASK_0039/0040), `complete()`/`embed()` (TASK_0032/0033).
+Not yet implemented: conversations/agent loop (Phase 4), interop adapters
+(TASK_0039/0040), `complete()`/`embed()` (TASK_0032/0033).
 
 ## Key files
 
@@ -55,7 +72,7 @@ interop adapters (TASK_0039/0040), `complete()`/`embed()` (TASK_0032/0033).
 ## Conventions
 
 - **All code is TypeScript.** Strict mode, ES2022, `moduleResolution:
-  "Bundler"`, native TC39 stage-3 decorators (no `experimentalDecorators`).
+"Bundler"`, native TC39 stage-3 decorators (no `experimentalDecorators`).
 - **Web-standard APIs only** in `src/core/` and `src/types/` — `fetch`,
   `AbortController`, `ReadableStream`, `crypto.randomUUID`,
   `structuredClone`, `queueMicrotask`. No Node built-ins, no DOM.
