@@ -62,21 +62,33 @@ src/
 
 - **BHAI class** (`bhai.ts`): `use()`, `on()`/`emit()`, `init()`/`dispose()`,
   `declareConfig`/`setConfig`/`getConfig`, `addTool`/`removeTool`/`listTools`,
-  `addDriver`/`listModels`, `addCommand`/`listCommands`.
+  `addDriver`/`listModels`, `addCommand`/`listCommands`. See
+  `core/kernel.md`.
 - **EventBus** (`event-bus.ts`): sequential awaited dispatch, patch chaining,
-  blockable pipelines, reserved-namespace enforcement, global FIFO.
+  blockable pipelines, reserved-namespace enforcement, global FIFO. See
+  `core/event-bus.md`.
 - **Decorators** (`decorators.ts`): TC39 stage-3 `@Plugin`, `@On`, `@Tool`.
+  See `core/plugins.md`.
 - **DriverRegistry** (`drivers.ts`): driver storage, `listModels()` merge,
-  `driver.registered` events.
+  `driver.registered` events. See `core/drivers.md`.
 - **CommandRegistry** (`commands.ts`): command storage, "last wins" shadowing.
-- **Lifecycle** (`lifecycle.ts`): init/dispose ordering.
-- **Config** (`config.ts`): `ajv`-based plugin config validation.
+  See `core/command-registry.md`.
+- **Lifecycle** (`lifecycle.ts`): init/dispose ordering. See
+  `core/plugins.md`.
+- **Config** (`config.ts`): `ajv`-based plugin config validation. See
+  `core/plugins.md`.
+
+### Shared types (`src/types/`)
+
+- Cross-cutting type declarations (no runtime logic). See
+  `core/types.md`.
 
 ### Tools (`src/tools/`)
 
 - **ToolRegistry** (`registry.ts`): single source of truth for all tools.
   Shadowing (replace, no `tool.removed`), `tool.registered`/`tool.removed`
-  events. Origin-agnostic (local vs. MCP invisible here).
+  events. Origin-agnostic (local vs. MCP invisible here). See
+  `core/tool-registry.md`.
 
 ### MCP client (`src/plugins/mcp/`)
 
@@ -110,3 +122,20 @@ pnpm typecheck     # tsc --noEmit
 pnpm lint          # biome check .
 pnpm build         # tsup build
 ```
+
+See `getting-started.md` for the full scaffolding/tooling reference
+(package layout, subpath exports, tsconfig choices, dependency policy).
+
+## Per-subsystem documentation
+
+| Subsystem                                            | Doc                        |
+| ---------------------------------------------------- | -------------------------- |
+| Scaffolding & tooling                                | `getting-started.md`       |
+| Kernel (`BHAI` class)                                | `core/kernel.md`           |
+| Event bus                                            | `core/event-bus.md`        |
+| Plugin system (forms, lifecycle, config, decorators) | `core/plugins.md`          |
+| Shared types                                         | `core/types.md`            |
+| Tool registry                                        | `core/tool-registry.md`    |
+| Driver registry                                      | `core/drivers.md`          |
+| Command registry                                     | `core/command-registry.md` |
+| MCP client                                           | `plugins/mcp-client.md`    |
