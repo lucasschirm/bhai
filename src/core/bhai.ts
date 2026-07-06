@@ -28,12 +28,14 @@ import { ToolRegistry } from "../tools/registry.js"
 import type { JSONSchema } from "../types/content.js"
 import type { EmitResult, Unsubscribe } from "../types/events.js"
 import type {
+	BHAICommandDefinition,
 	BHAIDriver,
 	BHAIToolDefinition,
 	ModelInfo,
 	ToolExecute,
 	ToolFilter,
 } from "../types/index.js"
+import { CommandRegistry } from "./commands.js"
 import { type ToolRegistrar, getPluginMetadata } from "./decorators.js"
 import { DriverRegistry } from "./drivers.js"
 import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
@@ -122,7 +124,7 @@ export interface BHAIPluginCapabilities {
 	/** Refined to `BHAIToolDefinition[]` once TASK_0008 lands. */
 	tools?: unknown[]
 	/** Refined to `Record<string, BHAICommandDefinition>` once TASK_0010 lands. */
-	commands?: Record<string, unknown>
+	commands?: Record<string, BHAICommandDefinition>
 	/** Declares host-supplied plugin configuration (§ 7.4); validated by TASK_0006. */
 	configSchema?: JSONSchema
 	/** Refined to `CredentialResolver` once TASK_0015 / § 10.4 lands. */
@@ -305,6 +307,15 @@ export class BHAI {
 	 * responsibility — see the seam comment inside {@link DriverRegistry.listModels}.
 	 */
 	private readonly driverRegistry: DriverRegistry = new DriverRegistry(this.bus)
+
+	/**
+	 * The '/slash'-command registry (§ 6) — the kernel-side store of
+	 * host-invocable commands. Wired up by TASK_0010; backs `addCommand` and
+	 * the internal `listCommands()` accessor. Has NO event-bus integration:
+	 * § 8.1 defines no `command.registered`/`command.removed` event pair, so
+	 * this registry is a pure storage structure (see {@link CommandRegistry}).
+	 */
+	private readonly commandRegistry: CommandRegistry = new CommandRegistry()
 
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
@@ -535,9 +546,32 @@ export class BHAI {
 		throw new Error("bh.embed(): not implemented — see TASK_0033")
 	}
 
-	/** TODO(TASK_0010): '/slash' command registry (§ 6). */
-	addCommand(): void {
-		throw new Error("bh.addCommand(): not implemented — see TASK_0010")
+	/**
+	 * Register a '/slash'-command (§ 6). Stores `def` under `name`; a duplicate
+	 * `addCommand(name, def)` call silently replaces the earlier entry under
+	 * that name (last-registration-wins, consistent with TASK_0008's tools and
+	 * TASK_0009's drivers). No framework event is fired — § 8.1 defines no
+	 * `command.registered`/`command.removed` event pair. Implemented by
+	 * TASK_0010 as a thin delegation to the {@link CommandRegistry}.
+	 *
+	 * The stored {@link BHAICommandDefinition} shape is identical whether it
+	 * arrives via this imperative path or via the capability-object `commands:`
+	 * key (§ 7.2 line 272) resolved during `use()`/`init()` — wiring that
+	 * capability-object path is TASK_0003/0005's job, not TASK_0010's.
+	 */
+	addCommand(name: string, def: BHAICommandDefinition): void {
+		this.commandRegistry.addCommand(name, def)
+	}
+
+	/**
+	 * Snapshot of registered commands as `{ name, def }` entries (§ 6 —
+	 * reasonable addition beyond the literal spec text, parallel to
+	 * `listTools()`). Used by tests and by future host-integration tasks to
+	 * enumerate available commands (e.g. to build a `/`-prefix autocomplete
+	 * menu). Implemented by TASK_0010.
+	 */
+	listCommands(): Array<{ name: string; def: BHAICommandDefinition }> {
+		return this.commandRegistry.listCommands()
 	}
 
 	/** TODO(TASK_0015): attach an MCP server (§ 9.2). */

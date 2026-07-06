@@ -152,7 +152,7 @@ describe("Decorated instances normalize into the canonical plugin shape", () => 
 		}
 
 		const instance = new MetaPlugin()
-		const meta = (instance as { [BHAI_PLUGIN_META]: unknown })[BHAI_PLUGIN_META] as {
+		const meta = (instance as unknown as { [BHAI_PLUGIN_META]: unknown })[BHAI_PLUGIN_META] as {
 			name: string
 			onHandlers: unknown[]
 			tools: unknown[]

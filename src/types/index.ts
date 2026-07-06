@@ -37,3 +37,17 @@ export type {
 	ToolFilter,
 	ToolInvocation,
 } from "./tool.js"
+// Command types were not landed by TASK_0002 before TASK_0010 started; TASK_0010
+// added them in `./command.js` on TASK_0002's behalf (see the coordination note
+// at the top of that file). Re-exported here so the barrel stays the single
+// import point for downstream tasks.
+export type {
+	BHAICommandContext,
+	BHAICommandDefinition,
+} from "./command.js"
+// MCP types were not landed by TASK_0002 before TASK_0011 started; TASK_0011
+// added `McpServerConfig` in `./mcp.js` on TASK_0002's behalf (see the
+// coordination note at the top of that file). Re-exported here so the barrel
+// stays the single import point for downstream tasks. TASK_0015 (the public
+// `bh.addMcp()` entry point) consumes this type.
+export type { McpServerConfig } from "./mcp.js"

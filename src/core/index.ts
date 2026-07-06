@@ -13,6 +13,7 @@ export {
 	type BHAIPluginLike,
 	type ConfigChangedPayload,
 } from "./bhai.js"
+export { CommandRegistry } from "./commands.js"
 export {
 	EventBus,
 	type BlockSignal,
