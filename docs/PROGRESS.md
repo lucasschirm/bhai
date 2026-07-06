@@ -35,11 +35,11 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0010 | Command registry                                      | [x]    |
 | 0011 | MCP client — handshake & discovery                    | [x]    |
 | 0012 | MCP client — resync, calls, progress, cancellation    | [x]    |
-| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [ ]    |
-| 0014 | MCP capabilities — elicitation, sampling, roots       | [ ]    |
-| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [ ]    |
-| 0016 | Deferred tool loading (`search_tools`)                | [ ]    |
-| 0017 | Tool availability filtering seam                      | [ ]    |
+| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [x]    |
+| 0014 | MCP capabilities — elicitation, sampling, roots       | [x]    |
+| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [x]    |
+| 0016 | Deferred tool loading (`search_tools`)                | [x]    |
+| 0017 | Tool availability filtering seam                      | [x]    |
 
 ## Phase 3 — Drivers & model selection
 
@@ -233,8 +233,75 @@ Source of truth for task files: `../tasks/` (parent repo).
 - New error classes: `McpTimeoutError`, `McpCallError`.
 - 10 additional tests (27 total in `client.test.ts`).
 
+### TASK_0013: MCP client — human-in-the-loop & untrusted-by-default
+
+- `src/plugins/mcp/approval.ts` — `ApprovalGate` function type, `McpApprovalOptions`,
+  `McpApprovalError`, and the `guardCall()` refusal-policy helper.
+- Refusal policy: `autoApproveTools: true` short-circuits; no gate + no opt-out refuses
+  with a clear error; gate present delegates and surfaces the reason on refusal.
+- `McpServerConfig.trusted` flag added (default `false`); stored inertly and exposed via
+  `McpClient.isTrusted()`. Consumed by TASK_0017's availability filtering, NOT by this
+  task's own logic.
+- `McpClient.callTool()` wraps the transport call in `guardCall()` — refusal happens
+  before any `fetch` is attempted.
+- 19 tests in `src/plugins/mcp/approval.test.ts`.
+
+### TASK_0014: MCP capabilities — elicitation, sampling, roots
+
+- `src/plugins/mcp/capabilities.ts` — `McpClientCapabilityOptions` (opt-in shape),
+  `buildClientCapabilities()` (key-presence-based), and the three inbound request
+  handlers (`handleElicitation`, `handleSampling`, `handleRootsList`).
+- `initialize` handshake's `capabilities` object built conditionally — a key is
+  included IFF its opt-in is present (entirely absent otherwise, per MCP semantics).
+- Sampling reuses the TASK_0013 `ApprovalGate` verbatim (same "subscribed approver OR
+  `autoApproveTools`" policy as tool calls).
+- `McpClient.handleInboundRequest()` dispatches `elicitation/create`,
+  `sampling/createMessage`, `roots/list`; `McpClient.notifyRootsChanged()` sends
+  `notifications/roots/list_changed`.
+- 37 tests in `src/plugins/mcp/capabilities.test.ts`.
+
+### TASK_0015: `addMcp()` + `getMcps`/`modelSource` hooks
+
+- `src/core/mcp-integration.ts` — `McpRegistry`, `McpHandle`, `McpClientFactory` seam,
+  `resolveGetMcpsHooks()`, `resolveModelSourceHooks()`.
+- `BHAI.addMcp()` implemented (replaces the stub); delegates to `McpRegistry`.
+- `BHAI.init()` seam filled — resolves `getMcps` and `modelSource` hooks AFTER all
+  `initialize` hooks run and BEFORE the `initialize` framework event fires (§ 8.5
+  step 2). Fires `mcp.attached` per attach.
+- `BHAI.listModels()` now merges driver registry + `modelSource` hook results.
+- Packaging rule respected: `src/core/` never imports `src/plugins/mcp/` — the MCP
+  plugin injects its `McpClient` constructor via `registerMcpClientFactory()`.
+- 25 tests in `src/core/mcp-integration.test.ts`.
+
+### TASK_0016: Deferred tool loading (`search_tools`)
+
+- `src/plugins/mcp/deferred.ts` — `registerDeferredTools()`,
+  `eagerRegisterAndAnswer()`, `DeferredMcpTool`, `DeferredContext`.
+- When `deferred: true`, `McpClient.connect()` fetches `tools/list` (to cache) but
+  registers only two synthetic tools: `mcp__<server>__list_tools` and
+  `mcp__<server>__search_tools`.
+- Calling either synthetic tool eagerly registers all cached real tools (registered
+  live for the rest of the conversation); `search_tools` returns a keyword-filtered
+  list (case-insensitive substring match on name + description).
+- Purely client-side policy — no server support or protocol extension required.
+- 13 tests in `src/plugins/mcp/deferred.test.ts`.
+
+### TASK_0017: Tool availability filtering seam
+
+- `src/tools/availability.ts` — `resolveAvailableTools()` (pure 3-step decision
+  function), `applyToolFilter()`, `isToolTrusted()`, `ResolvedTool`.
+- § 9.5 resolution order: (1) static `ToolFilter` (allow/deny, tags include/exclude),
+  (2) `contextPatchedTools` (REPLACES step 1 output, not a merge), (3) driver-
+  capability gating (`toolCalls: false` → empty array).
+- Trust flag derived from `McpServerConfig.trusted` (TASK_0013) — local tools always
+  trusted; `mcp__<server>__<tool>` tools trusted IFF server is in `trustedSources`.
+- UNRESOLVED: "Prompt-injected tool fallback" (§ 9.5 step 3 parenthetical) explicitly
+  flagged as not implemented — returns empty array; a future task (likely TASK_0026)
+  will implement the prompt-injection path.
+- 30 tests in `src/tools/availability.test.ts`.
+
 ## Test suite status
 
-- 178 tests across 12 test files — all passing.
+- 283 tests across 16 test files — all passing.
 - Lint (biome): clean.
 - Typecheck (tsc --noEmit): clean.

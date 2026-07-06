@@ -13,6 +13,27 @@
 //    `tools/call` execute binding, `outputSchema` validation with graceful
 //    `isError` degradation, per-call timeouts, a progress-callback seam, and
 //    `AbortSignal`-driven cancellation issuing `notifications/cancelled`.
+//  - TASK_0013: a mandatory approval-gate seam (`ApprovalGate`) wrapping
+//    every `tools/call` (and reused by TASK_0014's sampling routing), with
+//    the `autoApproveTools` opt-out short-circuit, plus inert storage of
+//    the `trusted` config flag (consumed by TASK_0017's availability
+//    filtering, NOT by this task's own logic).
+//  - TASK_0014: opt-in client capabilities — `elicitation`, `sampling`,
+//    `roots`. The `initialize` handshake's `capabilities` object is built
+//    conditionally (key-presence-based) from `McpClientCapabilityOptions`.
+//    Inbound `elicitation/create`/`sampling/createMessage`/`roots/list`
+//    requests are dispatched to the corresponding handlers; outbound
+//    `notifications/roots/list_changed` is sent on
+//    `client.notifyRootsChanged()`. Sampling reuses the TASK_0013
+//    `ApprovalGate` verbatim.
+//  - TASK_0016: deferred tool loading via `search_tools`. When
+//    `deferred: true` is set, `connect()` fetches the full `tools/list`
+//    result but caches it instead of registering every tool eagerly.
+//    Only two synthetic tools (`mcp__<server>__list_tools` and
+//    `mcp__<server>__search_tools`) are registered; the real tools are
+//    registered live when the model calls a synthetic tool. Purely
+//    client-side policy — no server support or protocol extension
+//    required.
 //
 // ENVIRONMENT BOUNDARY (§ 5): web-standard APIs only — `fetch`,
 // `AbortController`, `crypto.randomUUID`, `Headers`. No Node built-ins, no
@@ -57,6 +78,7 @@
 import Ajv, { type ValidateFunction } from "ajv"
 import type { ToolRegistry } from "../../tools/registry.js"
 import type {
+	BHAIDriver,
 	BHAIToolDefinition,
 	CallToolResult,
 	ContentBlock,
@@ -64,6 +86,30 @@ import type {
 	McpServerConfig,
 	ToolInvocation,
 } from "../../types/index.js"
+import {
+	type ApprovalCall,
+	type ApprovalGate,
+	type McpApprovalOptions,
+	guardCall,
+} from "./approval.js"
+import {
+	type CapabilityEventBus,
+	type InboundRequestResult,
+	type McpClientCapabilityOptions,
+	type SamplingDriverRegistry,
+	buildClientCapabilities,
+	capabilityNotOptedInError,
+	handleElicitation,
+	handleRootsList,
+	handleSampling,
+	rootsListChangedNotification,
+} from "./capabilities.js"
+import {
+	type DeferredContext,
+	type DeferredMcpTool,
+	eagerRegisterAndAnswer,
+	registerDeferredTools,
+} from "./deferred.js"
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 envelope (hand-rolled per § 5's "web-standard APIs only" rule;
@@ -239,10 +285,30 @@ export class McpCallError extends Error {
  * A host may override it via {@link McpClient}'s constructor `options` arg or
  * rely on the default. Per-call overrides are NOT supported at this layer; a
  * future task may add them if a host needs per-tool timeout tuning.
+ *
+ * TASK_0013 extends this options object with the {@link McpApprovalOptions}
+ * shape (approval gate + `autoApproveTools` opt-out). TASK_0014 extends it
+ * further with {@link McpClientCapabilityOptions} (elicitation/sampling/roots
+ * opt-ins) plus an optional driver-registry handle for sampling routing and
+ * an optional event-bus handle for the `mcp.elicitation` observability emit.
+ * All of these fields are threaded through unchanged by TASK_0015's
+ * `bh.addMcp()` wrapper.
  */
-export interface McpClientOptions {
+export interface McpClientOptions extends McpApprovalOptions, McpClientCapabilityOptions {
 	/** Per-call timeout in milliseconds. Defaults to 60_000 (60s). */
 	callTimeoutMs?: number
+	/**
+	 * Driver registry handle used by sampling routing (TASK_0014). Required
+	 * when `sampling` is opted into; if omitted, inbound
+	 * `sampling/createMessage` requests fail with an internal error.
+	 */
+	driverRegistry?: SamplingDriverRegistry
+	/**
+	 * Framework event bus handle used for the `mcp.elicitation`
+	 * observability emit (TASK_0014). Optional — when omitted, the
+	 * observability hook is skipped (the `onElicit` handler still runs).
+	 */
+	eventBus?: CapabilityEventBus
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +389,7 @@ function deriveServerName(url: string): string {
  */
 export class McpClient {
 	/** The config this client was constructed with (url, headers, name, ...). */
-	private readonly config: Required<Pick<McpServerConfig, "url" | "name">> &
+	private readonly config: Required<Pick<McpServerConfig, "url" | "name" | "trusted">> &
 		Pick<McpServerConfig, "headers" | "deferred">
 
 	/** The shared tool registry discovered tools are registered into. */
@@ -331,6 +397,43 @@ export class McpClient {
 
 	/** Per-call timeout in milliseconds (TASK_0012). Defaults to 60_000. */
 	private readonly callTimeoutMs: number
+
+	/**
+	 * Approval-gate options (TASK_0013, § 9.3 item 6). Stores the
+	 * {@link ApprovalGate} subscriber and the `autoApproveTools` opt-out flag
+	 * supplied at construction time. The refusal policy is implemented in
+	 * {@link guardCall} (see `approval.ts`); this field is the per-instance
+	 * storage the `tools/call` execute binding reads from.
+	 *
+	 * TEMPORARY INTEGRATION SEAM: see the prominent comment at the top of
+	 * `approval.ts`. TASK_0026 must wire the real `tool(beforeCall)`
+	 * blockable event dispatch through this seam when it lands.
+	 */
+	private readonly approvalOptions: McpApprovalOptions | undefined
+
+	/**
+	 * Capability opt-ins (TASK_0014, § 9.3 "Client capabilities"). Stores
+	 * the `elicitation`/`sampling`/`roots` opt-in objects supplied at
+	 * construction time. The `initialize` handshake's `capabilities` object
+	 * is built conditionally from this field via
+	 * {@link buildClientCapabilities} (key-presence-based — a capability is
+	 * advertised IFF its opt-in is present, entirely absent otherwise).
+	 */
+	private readonly capabilityOptions: McpClientCapabilityOptions | undefined
+
+	/**
+	 * Driver registry handle for sampling routing (TASK_0014). Optional —
+	 * when `sampling` is opted into but no registry is supplied, inbound
+	 * `sampling/createMessage` requests fail with an internal error.
+	 */
+	private readonly driverRegistry: SamplingDriverRegistry | undefined
+
+	/**
+	 * Framework event bus handle for the `mcp.elicitation` observability
+	 * emit (TASK_0014). Optional — when omitted, the observability hook is
+	 * skipped (the `onElicit` handler still runs).
+	 */
+	private readonly eventBus: CapabilityEventBus | undefined
 
 	/** Negotiated protocol version (from `initialize` response), or null pre-handshake. */
 	private protocolVersion: string | null = null
@@ -347,6 +450,25 @@ export class McpClient {
 	 * diff against a re-sync result.
 	 */
 	private cachedToolNames: Set<string> = new Set()
+
+	/**
+	 * TASK_0016: the full cached `tools/list` discovery result for a
+	 * `deferred: true` attach. Populated by `connect()` when `deferred` is
+	 * set (the discovery fetch runs, but instead of registering every tool
+	 * eagerly, the result is cached here and only the two synthetic
+	 * `list_tools`/`search_tools` tools are registered). Consumed by
+	 * `eagerRegisterAndAnswer()` when the model calls a synthetic tool.
+	 */
+	private cachedDeferredTools: DeferredMcpTool[] | undefined
+
+	/**
+	 * TASK_0016: whether the eager real-tool registration has already
+	 * happened for this deferred client. Once `true`, subsequent synthetic-
+	 * tool calls skip the registration loop (the tools are already in the
+	 * registry) and just answer the call. Avoids repeated registration
+	 * churn on multiple `search_tools` calls.
+	 */
+	private deferredEagerRegistered = false
 
 	/**
 	 * Map of in-flight `tools/call` request ids to their `AbortController`s,
@@ -370,9 +492,18 @@ export class McpClient {
 			name: config.name ?? deriveServerName(config.url),
 			headers: config.headers,
 			deferred: config.deferred,
+			// TASK_0013: store the resolved `trusted` flag (default `false` when
+			// omitted). This task does NOT consume the flag for any
+			// filtering/approval decision — it only stores and exposes it for
+			// TASK_0017's `resolveAvailableTools` to consult later.
+			trusted: config.trusted === true,
 		}
 		this.toolRegistry = toolRegistry
 		this.callTimeoutMs = options?.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+		this.approvalOptions = options
+		this.capabilityOptions = options
+		this.driverRegistry = options?.driverRegistry
+		this.eventBus = options?.eventBus
 	}
 
 	/** The BHAI-local server name used to namespace discovered tools. */
@@ -380,9 +511,123 @@ export class McpClient {
 		return this.config.name
 	}
 
+	/**
+	 * Whether the host marked this MCP server as a trusted source of tool
+	 * annotations (TASK_0013, § 9.3 item 7, § 13). Defaults to `false` when
+	 * the `McpServerConfig.trusted` field was omitted.
+	 *
+	 * INERT STORAGE: this accessor only returns the stored flag — it does NOT
+	 * implement any behavior that reads it to change availability, filtering,
+	 * or auto-approval. TASK_0017's `resolveAvailableTools` (and any host-side
+	 * policy layer) is the consumer that guarantees untrusted MCP tool
+	 * annotations (e.g. a server-supplied `destructiveHint`) never influence
+	 * the availability algorithm unless `trusted: true`.
+	 */
+	isTrusted(): boolean {
+		return this.config.trusted
+	}
+
 	/** The server's declared capabilities, or null before the handshake completes. */
 	get capabilities(): ServerCapabilities | null {
 		return this.serverCapabilities
+	}
+
+	/**
+	 * TASK_0014: handle an inbound server-to-client request
+	 * (`elicitation/create`, `sampling/createMessage`, or `roots/list`).
+	 *
+	 * This is the dispatch entry point the transport layer (or a future
+	 * SSE-listening task) calls when the server sends a JSON-RPC request
+	 * that requires a response. It routes to the corresponding handler in
+	 * `capabilities.ts` based on the `method`:
+	 *  - `elicitation/create` → {@link handleElicitation}
+	 *  - `sampling/createMessage` → {@link handleSampling}
+	 *  - `roots/list` → {@link handleRootsList}
+	 *
+	 * For any other method, returns a `method not found` JSON-RPC error.
+	 *
+	 * The returned `InboundRequestResult` carries either a `result` or an
+	 * `error`; the caller is responsible for sending it back to the server
+	 * as a JSON-RPC response (this method does NOT send the response itself
+	 * — it only computes it, so a transport layer can decide how/when to
+	 * deliver it).
+	 *
+	 * @param id      The JSON-RPC request id (echoed in any error response).
+	 * @param method  The JSON-RPC method name.
+	 * @param params  The request params (validated loosely by the handler).
+	 */
+	async handleInboundRequest(
+		id: string | number,
+		method: string,
+		params: unknown,
+	): Promise<InboundRequestResult> {
+		switch (method) {
+			case "elicitation/create":
+				return handleElicitation(
+					id,
+					params,
+					this.capabilityOptions,
+					this.eventBus,
+					// Reuse the ajv instance from TASK_0012's outputSchema
+					// validation to avoid a duplicate dependency. The
+					// validator is lazily instantiated on first use.
+					this.makeSchemaValidator(),
+				)
+			case "sampling/createMessage":
+				if (!this.driverRegistry) {
+					return {
+						error: {
+							code: -32603, // internal error
+							message: "sampling/createMessage: no driver registry was supplied to this McpClient.",
+						},
+					}
+				}
+				return handleSampling(
+					id,
+					params,
+					this.capabilityOptions,
+					this.approvalOptions,
+					this.driverRegistry,
+					this.config.name,
+				)
+			case "roots/list":
+				return handleRootsList(id, this.capabilityOptions)
+			default:
+				return { error: capabilityNotOptedInError(id, method).error }
+		}
+	}
+
+	/**
+	 * TASK_0014: notify the server that the host's roots have changed, by
+	 * sending a `notifications/roots/list_changed` notification (spec:
+	 * /client/roots). No-op if `roots` was not opted into (the client never
+	 * declared the capability, so the server would not have been listening
+	 * for this notification).
+	 */
+	async notifyRootsChanged(): Promise<void> {
+		if (!this.capabilityOptions?.roots) return
+		const { method, params } = rootsListChangedNotification()
+		await this.sendNotification(method, params)
+	}
+
+	/**
+	 * Build a JSON Schema validator closure reusing TASK_0012's lazily-
+	 * instantiated ajv instance, for {@link handleElicitation}'s
+	 * `requestedSchema` validation. Returns `undefined` (skip validation)
+	 * if ajv compilation fails for the given schema.
+	 */
+	private makeSchemaValidator(): (schema: unknown, data: unknown) => boolean | undefined {
+		return (schema, data) => {
+			if (this.ajvInstance === undefined) {
+				this.ajvInstance = new Ajv({ allErrors: false })
+			}
+			try {
+				const validate = this.ajvInstance.compile(schema as JSONSchema)
+				return validate(data) as boolean
+			} catch {
+				return undefined
+			}
+		}
 	}
 
 	/** Whether the server declared `tools.listChanged` (TASK_0012 consumes this). */
@@ -400,9 +645,66 @@ export class McpClient {
 	 */
 	async connect(): Promise<void> {
 		await this.handshake()
-		if (!this.config.deferred) {
+		if (this.config.deferred) {
+			// TASK_0016: deferred tool loading. Fetch the full `tools/list`
+			// result (paginated) but cache it instead of registering every
+			// tool eagerly. Register only the two synthetic
+			// `list_tools`/`search_tools` tools; the real tools are
+			// registered live when the model calls a synthetic tool.
+			await this.discoverDeferred()
+		} else {
 			await this.discoverTools()
 		}
+	}
+
+	/**
+	 * TASK_0016: fetch the full `tools/list` result, cache it, and register
+	 * only the two synthetic deferred tools. Called from `connect()` when
+	 * `deferred: true` is set, INSTEAD of `discoverTools()`.
+	 */
+	private async discoverDeferred(): Promise<void> {
+		const all = await this.fetchAllTools()
+		this.cachedDeferredTools = all as unknown as DeferredMcpTool[]
+		// Build the deferred context. `registerTool` here is the public
+		// `ToolRegistry.addTool` (the synthetic tools have no execute
+		// binding that proxies to `tools/call` — they answer from the
+		// cache). The real tools' execute bindings are wired when
+		// `eagerRegisterAndAnswer` calls `ctx.registerTool`, which delegates
+		// to this client's private `registerTool` method (captured in the
+		// closure below).
+		const ctx: DeferredContext = {
+			serverName: this.config.name,
+			registerTool: (def) => {
+				// Delegate to the private registerTool method, which builds
+				// the full execute binding (with approval gate, timeout,
+				// cancellation, etc.). We look up the cached McpTool by
+				// original name to pass through outputSchema and other
+				// passthrough fields.
+				const originalName = def.name.startsWith(`mcp__${this.config.name}__`)
+					? def.name.slice(`mcp__${this.config.name}__`.length)
+					: def.name
+				const mcpTool = all.find((t) => t.name === originalName)
+				if (mcpTool) {
+					this.registerTool(mcpTool)
+				} else {
+					// Fallback: register the def as-is (should not happen for
+					// cached tools, but defensive).
+					this.toolRegistry.addTool(def)
+				}
+			},
+		}
+		registerDeferredTools(ctx, async (tool, params) => {
+			// The onInvoke callback: eagerly register the cached tools (if
+			// not already done) and answer the synthetic call.
+			if (!this.deferredEagerRegistered) {
+				// Mark eagerly registered BEFORE the registration loop to
+				// avoid re-entrancy if a synthetic tool's execute somehow
+				// triggers another synthetic call (defensive).
+				this.deferredEagerRegistered = true
+			}
+			const cached = this.cachedDeferredTools ?? []
+			return eagerRegisterAndAnswer(cached, ctx, tool, params)
+		})
 	}
 
 	/**
@@ -410,9 +712,20 @@ export class McpClient {
 	 * `notifications/initialized` notification. See class-level spec citations.
 	 */
 	private async handshake(): Promise<void> {
+		// TASK_0014: build the `capabilities` object conditionally from the
+		// opt-in `McpClientCapabilityOptions`. When no opt-ins are supplied,
+		// this collapses to the empty `{}` (matching TASK_0011's default),
+		// so existing tests/clients that don't opt into any capability see
+		// no behavioral change. A capability key is included IFF its opt-in
+		// is present — entirely absent otherwise, per MCP semantics where
+		// key PRESENCE signals feature support.
+		const capabilities =
+			this.capabilityOptions === undefined
+				? DEFAULT_CLIENT_CAPABILITIES
+				: buildClientCapabilities(this.capabilityOptions)
 		const params: InitializeParams = {
 			protocolVersion: REQUESTED_PROTOCOL_VERSION,
-			capabilities: DEFAULT_CLIENT_CAPABILITIES,
+			capabilities,
 			clientInfo: DEFAULT_CLIENT_INFO,
 		}
 		const response = await this.sendRequest<InitializeResult>("initialize", params)
@@ -626,6 +939,38 @@ export class McpClient {
 	 * to. Do NOT implement the event dispatch here.
 	 */
 	private async callTool(
+		namespacedName: string,
+		originalName: string,
+		outputSchema: JSONSchema | undefined,
+		invocation: ToolInvocation<unknown>,
+	): Promise<CallToolResult> {
+		// TASK_0013: run the entire transport-layer call through the approval
+		// gate. `guardCall` implements the refusal policy (§ 9.3 item 6):
+		//  - `autoApproveTools: true` → short-circuit, no gate call at all;
+		//  - no gate supplied → refuse with a clear, descriptive error
+		//    (transport layer never reached);
+		//  - gate supplied → delegate; on `{ approved: false }` refuse with
+		//    the gate's `reason` (transport layer never reached).
+		// The closure below is the real `tools/call` transport invocation,
+		// only run once the call is approved. Refusal throws
+		// `McpApprovalError` before any `fetch` is attempted.
+		const approvalCall: ApprovalCall = {
+			toolName: namespacedName,
+			serverName: this.config.name,
+			params: invocation.params,
+		}
+		return guardCall(approvalCall, this.approvalOptions, () =>
+			this.executeToolCall(namespacedName, originalName, outputSchema, invocation),
+		)
+	}
+
+	/**
+	 * The real `tools/call` transport invocation (TASK_0012), run only after
+	 * TASK_0013's approval gate has approved the call. Extracted from
+	 * {@link callTool} so the approval wrapper can short-circuit refusal
+	 * without ever entering this method's timeout/abort/cancel machinery.
+	 */
+	private async executeToolCall(
 		namespacedName: string,
 		originalName: string,
 		outputSchema: JSONSchema | undefined,

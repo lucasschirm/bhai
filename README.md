@@ -20,13 +20,13 @@ pnpm add @lucasschirm/bhai
 
 Three tiers of entry point let consumers load only what they need:
 
-| Subpath | Description |
-|---|---|
-| `@lucasschirm/bhai` | Root superset — re-exports core + every plugin. |
-| `@lucasschirm/bhai/core` | Kernel only (`BHAI`, `Conversation`, types, decorators, event bus). |
-| `@lucasschirm/bhai/plugins/mcp` | MCP streamable-HTTP client plugin. |
-| `@lucasschirm/bhai/plugins/webllm` | WebLLM driver plugin (planned). |
-| `@lucasschirm/bhai/plugins/ollama` | Ollama driver plugin (planned). |
+| Subpath                            | Description                                                         |
+| ---------------------------------- | ------------------------------------------------------------------- |
+| `@lucasschirm/bhai`                | Root superset — re-exports core + every plugin.                     |
+| `@lucasschirm/bhai/core`           | Kernel only (`BHAI`, `Conversation`, types, decorators, event bus). |
+| `@lucasschirm/bhai/plugins/mcp`    | MCP streamable-HTTP client plugin.                                  |
+| `@lucasschirm/bhai/plugins/webllm` | WebLLM driver plugin (planned).                                     |
+| `@lucasschirm/bhai/plugins/ollama` | Ollama driver plugin (planned).                                     |
 
 ## Quick start
 
@@ -45,7 +45,9 @@ bh.use({
       inputSchema: { type: "object", properties: { name: { type: "string" } } },
       execute: async (invocation) => {
         return {
-          content: [{ type: "text", text: `Hello, ${invocation.params.name}!` }],
+          content: [
+            { type: "text", text: `Hello, ${invocation.params.name}!` },
+          ],
           isError: false,
         };
       },
@@ -65,13 +67,16 @@ await bh.init();
   `@Plugin`/`@On`/`@Tool` decorated class (TC39 stage-3 decorators).
 - **Event model** — dot-namespaced, two buses (framework `bh.on`,
   per-conversation `conversation.on`), patch chaining, blockable pipelines.
-- **Tools** — a BHAI tool definition *is* an MCP `Tool` object plus a local
-  `execute` binding; results *are* MCP `CallToolResult`s. Local and remote
+- **Tools** — a BHAI tool definition _is_ an MCP `Tool` object plus a local
+  `execute` binding; results _are_ MCP `CallToolResult`s. Local and remote
   MCP tools share one registry.
 - **Drivers** — `BHAIDriver` interface (`listModels`, `capabilities`, `chat`).
   Two bundled (planned): WebLLM (browser/WebGPU) and Ollama (plain fetch).
 - **MCP client** — streamable-HTTP transport only (spec rev 2025-11-25).
-  Handles handshake, paginated discovery, live re-sync, progress/cancellation.
+  Handles handshake, paginated discovery, live re-sync, progress/cancellation,
+  a human-in-the-loop approval gate (untrusted by default), opt-in client
+  capabilities (elicitation, sampling, roots), and deferred tool loading via
+  `search_tools` synthetic tools for large tool sets.
 
 ## Environment boundary
 
@@ -109,8 +114,15 @@ pnpm build            # tsup build
 
 ## Documentation
 
+- `docs/getting-started.md` — package scaffolding, tooling, subpath exports.
 - `docs/ARCHITECTURE.md` — implemented architecture overview.
-- `docs/PROGRESS.md` — task completion status.
+- `docs/PROGRESS.md` — task completion status (TASK_0001–TASK_0012 done).
+- `docs/core/kernel.md` — `BHAI` class (`use`, `on`/`emit`, `init`/`dispose`, config, registry wiring).
+- `docs/core/event-bus.md` — `EventBus` (sequential dispatch, patch chaining, blocking, reserved namespaces).
+- `docs/core/plugins.md` — plugin forms, lifecycle, config contract, decorators.
+- `docs/core/types.md` — shared type declarations.
+- `docs/core/tool-registry.md` — tool registry (single source of truth, shadowing, events).
+- `docs/core/drivers.md` — driver registry and `listModels()` merge.
 - `docs/core/command-registry.md` — command registry docs.
 - `docs/plugins/mcp-client.md` — MCP client docs.
 - `../ARCHITECTURE.md` (parent repo) — full v0.1 design proposal.

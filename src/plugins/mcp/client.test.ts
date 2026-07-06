@@ -87,7 +87,16 @@ function rpcBody(call: FetchCall): {
 	return JSON.parse(raw)
 }
 
-/** Fresh client + registry + bus per test, isolated from any other bus state. */
+/**
+ * Fresh client + registry + bus per test, isolated from any other bus state.
+ *
+ * TASK_0013 NOTE: these tests exercise the TRANSPORT layer (handshake,
+ * discovery, calls, timeouts, cancellation), not the approval gate. They
+ * therefore construct the client with `autoApproveTools: true` so the
+ * gate short-circuits and never interferes with the transport assertions.
+ * The approval gate's own behavior is tested separately in
+ * `approval.test.ts`.
+ */
 function freshClient(config: {
 	url: string
 	name?: string
@@ -96,7 +105,7 @@ function freshClient(config: {
 }): { client: McpClient; registry: ToolRegistry; bus: EventBus } {
 	const bus = new EventBus()
 	const registry = new ToolRegistry(bus)
-	const client = new McpClient(config, registry)
+	const client = new McpClient(config, registry, { autoApproveTools: true })
 	return { client, registry, bus }
 }
 
@@ -135,7 +144,12 @@ afterEach(() => {
 
 describe("McpClient handshake — initialize", () => {
 	it("sends a valid JSON-RPC 2.0 initialize request with protocolVersion + capabilities + clientInfo", async () => {
-		const responses = [jsonResponse(initResult()), acceptedResponse()]
+		// TASK_0016: deferred now fetches tools/list (to cache), so add a 3rd response.
+		const responses = [
+			jsonResponse(initResult()),
+			acceptedResponse(),
+			jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }),
+		]
 		const { calls } = installFetchSequence(responses)
 		const { client } = freshClient({ url: "https://example.com/mcp", deferred: true })
 		await client.connect()
@@ -168,7 +182,12 @@ describe("McpClient handshake — initialize", () => {
 	})
 
 	it("after a successful handshake, sends a notifications/initialized notification with no id", async () => {
-		const responses = [jsonResponse(initResult()), acceptedResponse()]
+		// TASK_0016: deferred now fetches tools/list (to cache), so add a 3rd response.
+		const responses = [
+			jsonResponse(initResult()),
+			acceptedResponse(),
+			jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }),
+		]
 		const { calls } = installFetchSequence(responses)
 		const { client } = freshClient({ url: "https://example.com/mcp", deferred: true })
 		await client.connect()
@@ -407,18 +426,38 @@ describe("McpClient discovery — tools/list pagination", () => {
 		expect(client.serverName).toBe("my-server.example.com")
 	})
 
-	it("deferred: true skips discovery at connect time (no tools/list call)", async () => {
-		const responses = [jsonResponse(initResult()), acceptedResponse()]
+	it("deferred: true fetches tools/list (to cache) but registers only the 2 synthetic tools (TASK_0016)", async () => {
+		const responses = [
+			jsonResponse(initResult()),
+			acceptedResponse(),
+			// tools/list is fetched (to cache the full result).
+			jsonResponse({
+				jsonrpc: "2.0",
+				id: "x",
+				result: {
+					tools: [
+						{ name: "t1", description: "d1", inputSchema: { type: "object" } },
+						{ name: "t2", description: "d2", inputSchema: { type: "object" } },
+					],
+				},
+			}),
+		]
 		const { fetch } = installFetchSequence(responses)
 		const { client, registry } = freshClient({
 			url: "https://example.com/mcp",
+			name: "srv",
 			deferred: true,
 		})
 		await client.connect()
 		await flush()
-		// Only 2 calls: initialize + initialized. No tools/list.
-		expect(fetch).toHaveBeenCalledTimes(2)
-		expect(registry.listTools()).toHaveLength(0)
+		// 3 calls: initialize + initialized + tools/list (fetched to cache).
+		expect(fetch).toHaveBeenCalledTimes(3)
+		// Only the 2 synthetic tools are registered (NOT t1/t2 yet).
+		const names = registry.listTools().map((t) => t.name)
+		expect(names).toContain("mcp__srv__list_tools")
+		expect(names).toContain("mcp__srv__search_tools")
+		expect(names).not.toContain("mcp__srv__t1")
+		expect(names).not.toContain("mcp__srv__t2")
 	})
 
 	it("extra config.headers are merged onto outbound requests", async () => {
@@ -469,7 +508,13 @@ describe("McpClient accessors", () => {
 // TASK_0012 — live re-sync, calls, progress & cancellation.
 // ---------------------------------------------------------------------------
 
-/** Fresh client with a configurable call timeout (default 60s is too slow for tests). */
+/**
+ * Fresh client with a configurable call timeout (default 60s is too slow for tests).
+ *
+ * TASK_0013 NOTE: like {@link freshClient}, this helper passes
+ * `autoApproveTools: true` so the approval gate short-circuits and the
+ * timeout/cancellation tests exercise the transport layer in isolation.
+ */
 function freshClientWithTimeout(
 	config: { url: string; name?: string; toolsListChanged?: boolean },
 	timeoutMs: number,
@@ -478,6 +523,7 @@ function freshClientWithTimeout(
 	const registry = new ToolRegistry(bus)
 	const client = new McpClient({ url: config.url, name: config.name }, registry, {
 		callTimeoutMs: timeoutMs,
+		autoApproveTools: true,
 	})
 	return { client, registry, bus }
 }

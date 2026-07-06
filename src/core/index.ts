@@ -29,3 +29,15 @@ export {
 	type PluginMetadata,
 	type ToolRegistrar,
 } from "./decorators.js"
+// TASK_0015: MCP integration — `bh.addMcp()` + getMcps/modelSource hooks.
+export {
+	McpRegistry,
+	type McpAttachedPayload,
+	type McpClientFactory,
+	type McpClientLike,
+	type McpHandle,
+	type ResolvedGetMcpsHook,
+	type ResolvedModelSourceHook,
+	resolveGetMcpsHooks,
+	resolveModelSourceHooks,
+} from "./mcp-integration.js"

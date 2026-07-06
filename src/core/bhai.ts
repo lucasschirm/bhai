@@ -31,6 +31,7 @@ import type {
 	BHAICommandDefinition,
 	BHAIDriver,
 	BHAIToolDefinition,
+	McpServerConfig,
 	ModelInfo,
 	ToolExecute,
 	ToolFilter,
@@ -39,6 +40,17 @@ import { CommandRegistry } from "./commands.js"
 import { type ToolRegistrar, getPluginMetadata } from "./decorators.js"
 import { DriverRegistry } from "./drivers.js"
 import { type DispatchOptions, EventBus, type Handler } from "./event-bus.js"
+import {
+	type McpAttachedPayload,
+	type McpClientFactory,
+	type McpClientLike,
+	type McpHandle,
+	McpRegistry,
+	type ResolvedGetMcpsHook,
+	type ResolvedModelSourceHook,
+	resolveGetMcpsHooks,
+	resolveModelSourceHooks,
+} from "./mcp-integration.js"
 
 // `ajv` is chosen as the JSON Schema validator for TASK_0006's config step
 // (§ 7.4) over alternatives (zod-to-JSON-Schema bridges, a hand-rolled
@@ -317,6 +329,27 @@ export class BHAI {
 	 */
 	private readonly commandRegistry: CommandRegistry = new CommandRegistry()
 
+	/**
+	 * The MCP registry (§ 6 line 215, § 9.3) — the kernel-side store of
+	 * attached MCP server handles. Wired up by TASK_0015; backs
+	 * `addMcp()` and the `getMcps` hook resolver. Fires `mcp.attached`
+	 * (§ 8.1) through the framework {@link EventBus}. The actual
+	 * `McpClient` constructor is injected by the MCP plugin during `setup()`
+	 * via {@link McpRegistry.registerClientFactory}, so the kernel never
+	 * imports from `src/plugins/mcp/` (per `.claude/rules/packaging.md`
+	 * rule 1 — "Core imports nothing optional").
+	 */
+	private readonly mcpRegistry: McpRegistry = new McpRegistry(this.bus, this.toolRegistry)
+
+	/**
+	 * The merged `modelSource` hook results, populated by
+	 * {@link resolveModelSourceHooks} during `bh.init()` (§ 8.5 step 2).
+	 * `undefined` until `init()` runs; merged into `bh.listModels()` alongside
+	 * the driver registry's catalogue. Stored on the instance (not globally)
+	 * so multiple `BHAI` instances coexist without collision.
+	 */
+	private modelSourceModels: ModelInfo[] | undefined
+
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
 		// Seed host-supplied config values from the constructor option. Each
@@ -437,18 +470,45 @@ export class BHAI {
 		// `initialize` framework event fires below. This matches § 8.5's
 		// overall "hooks → resolution → event" sequencing pattern: config
 		// resolution is a resolution step, so it sits with the other
-		// resolution steps (modelSource/getMcps above) between hooks and the
+		// resolution steps (modelSource/getMcps below) between hooks and the
 		// event. Throws synchronously (rejecting the init() promise) on the
 		// first schema violation, with a path-qualified message.
 		this.resolveAllConfig()
 
-		// TODO(TASK_0015): resolve `modelSource`/`getMcps` hooks here, in
-		// registration order, merging results into the tool/driver/MCP
-		// registries. Per § 8.5 step 2, this resolution happens AFTER all
-		// `initialize` hooks have run and BEFORE the `initialize` framework
-		// event fires below. Emits `driver.registered`, `mcp.attached`, and one
-		// `tool.registered` per discovered tool — none of that is implemented
-		// here.
+		// TASK_0015 (§ 8.5 step 2): resolve `modelSource`/`getMcps` hooks
+		// here, in registration order, merging results into the
+		// tool/driver/MCP registries. Per § 8.5, this resolution happens
+		// AFTER all `initialize` hooks have run and BEFORE the `initialize`
+		// framework event fires below. `getMcps` hooks attach MCP servers
+		// via `addMcp()` (emitting `mcp.attached` and one `tool.registered`
+		// per discovered tool); `modelSource` hooks contribute `ModelInfo[]`
+		// entries merged into `bh.listModels()` alongside the driver
+		// registry's catalogue. Partial-failure: if any hook throws or any
+		// `addMcp()` rejects, the whole `init()` rejects (consistent with
+		// TASK_0009's `DriverRegistry.listModels()` partial-failure
+		// assumption).
+		const getMcpsHooks: ResolvedGetMcpsHook[] = []
+		const modelSourceHooks: ResolvedModelSourceHook[] = []
+		for (const plugin of this.plugins) {
+			const caps = plugin.capabilities
+			if (caps?.getMcps) {
+				getMcpsHooks.push({
+					getMcps: caps.getMcps as () => Promise<McpServerConfig[]>,
+				})
+			}
+			if (caps?.modelSource) {
+				modelSourceHooks.push({
+					modelSource: caps.modelSource as () => Promise<ModelInfo[]>,
+				})
+			}
+		}
+		// Resolve modelSource hooks first so the merged catalogue is ready
+		// before any getMcps-attached server's sampling routing might query
+		// it (a sampling-capable server could be attached by a getMcps hook
+		// and immediately issue a sampling/createMessage request — rare, but
+		// ordering modelSource first is the safe choice).
+		this.modelSourceModels = await resolveModelSourceHooks(modelSourceHooks)
+		await resolveGetMcpsHooks(getMcpsHooks, this.mcpRegistry)
 
 		await this.bus.dispatch("initialize", { bh: this })
 	}
@@ -525,15 +585,25 @@ export class BHAI {
 	}
 
 	/**
-	 * Merged model catalogue from every registered driver (§ 6, § 10.1).
+	 * Merged model catalogue from every registered driver AND every
+	 * `modelSource` plugin hook (§ 6 line 189: "merged: drivers +
+	 * modelSource hooks").
 	 *
-	 * TASK_0009 implements only the driver half of the merge. The
-	 * `modelSource` plugin-hook half (§ 6 line 189: "merged: drivers +
-	 * modelSource hooks") is TASK_0015's responsibility — see the
-	 * `TODO(TASK_0015)` seam inside {@link DriverRegistry.listModels}.
+	 * TASK_0009 implemented the driver half; TASK_0015 adds the
+	 * `modelSource` hook half. The hook results are resolved once during
+	 * `bh.init()` (§ 8.5 step 2) and cached on the instance; this method
+	 * concatenates the driver registry's `listModels()` output with the
+	 * cached hook results. NO de-duplication is performed (consistent with
+	 * `DriverRegistry.listModels()`'s no-de-duplication convention).
+	 *
+	 * If `bh.init()` has not yet run, `modelSource` hooks have not been
+	 * resolved, so only the driver half is returned (no error — a host may
+	 * legitimately call `listModels()` pre-init to inspect driver models).
 	 */
 	async listModels(): Promise<ModelInfo[]> {
-		return this.driverRegistry.listModels()
+		const driverModels = await this.driverRegistry.listModels()
+		const hookModels = this.modelSourceModels ?? []
+		return [...driverModels, ...hookModels]
 	}
 
 	/** TODO(TASK_0032): one-shot LLM call detached from any conversation (§ 6). */
@@ -574,9 +644,37 @@ export class BHAI {
 		return this.commandRegistry.listCommands()
 	}
 
-	/** TODO(TASK_0015): attach an MCP server (§ 9.2). */
-	async addMcp(): Promise<never> {
-		throw new Error("bh.addMcp(): not implemented — see TASK_0015")
+	/**
+	 * Register an `McpClient` constructor factory (TASK_0015). Called by the
+	 * MCP plugin's `setup()` hook so the kernel can instantiate MCP clients
+	 * without importing from `src/plugins/mcp/` (per the packaging rule
+	 * "Core imports nothing optional"). Until this is called, `addMcp()`
+	 * refuses with a clear error.
+	 *
+	 * NOT part of § 6's named method list — this is an internal seam the MCP
+	 * plugin uses during `setup()`. Hosts do not call it directly.
+	 */
+	registerMcpClientFactory(factory: McpClientFactory): void {
+		this.mcpRegistry.registerClientFactory(factory)
+	}
+
+	/**
+	 * Attach an MCP server (§ 6 line 215, § 9.3). Constructs an `McpClient`
+	 * via the factory registered by the MCP plugin, awaits `connect()`
+	 * (handshake + discovery), and returns an {@link McpHandle} for advanced
+	 * host access. Fires the `mcp.attached` framework event (§ 8.1) with
+	 * `{ server, tools }`.
+	 *
+	 * Implemented by TASK_0015 as a thin delegation to {@link McpRegistry}.
+	 *
+	 * @param config   The server config (url, headers, name, deferred, trusted).
+	 * @param options  Opaque options forwarded to the `McpClient` constructor
+	 *                 (approval gate, capabilities, driver registry, event
+	 *                 bus, callTimeoutMs). Typed as `unknown` so the kernel
+	 *                 does not depend on the plugin's option types.
+	 */
+	async addMcp(config: McpServerConfig, options?: unknown): Promise<McpHandle> {
+		return this.mcpRegistry.addMcp(config, options)
 	}
 
 	/**

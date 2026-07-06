@@ -12,7 +12,8 @@
 //
 // The shapes match ARCHITECTURE.md § 6 line 215 (`{ url, headers?, name?,
 // deferred? }`) and § 9.3's spec-conformance notes (spec rev 2025-11-25,
-// streamable-HTTP transport only).
+// streamable-HTTP transport only). TASK_0013 extends the shape with the
+// `trusted?` flag (§ 9.3 item 7, § 13) — see the per-field doc below.
 
 /**
  * Configuration for attaching an MCP server (§ 6 line 215, § 9.3).
@@ -43,4 +44,18 @@ export interface McpServerConfig {
 	name?: string
 	/** Skip discovery at connect time; load tools on demand (TASK_0016). */
 	deferred?: boolean
+	/**
+	 * Whether the host marks this MCP server as a trusted source of tool
+	 * annotations (§ 9.3 item 7, § 13). Defaults to `false` when omitted.
+	 *
+	 * TASK_0013 stores this flag as INERT config — it does NOT implement any
+	 * behavior that reads it to change availability, filtering, or
+	 * auto-approval. The flag exists here so TASK_0017's
+	 * `resolveAvailableTools` (and any host-side policy layer) can guarantee
+	 * that untrusted MCP tool annotations (e.g. a server-supplied
+	 * `destructiveHint`) never influence the availability algorithm unless
+	 * the host explicitly marks the source `trusted: true`. Implementing that
+	 * consumption logic is TASK_0017's job, not TASK_0013's.
+	 */
+	trusted?: boolean
 }

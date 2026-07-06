@@ -18,3 +18,43 @@ export {
 	type McpClientOptions,
 	type ToolListDiff,
 } from "./client.js"
+// TASK_0013: approval-gate seam + untrusted-by-default flag. Reused verbatim
+// by TASK_0014's sampling routing — do NOT invent a parallel approval type.
+export {
+	McpApprovalError,
+	type ApprovalCall,
+	type ApprovalGate,
+	type ApprovalResult,
+	type McpApprovalOptions,
+	guardCall,
+	resolveAutoApprove,
+} from "./approval.js"
+// TASK_0014: opt-in client capabilities — elicitation, sampling, roots.
+export {
+	type CapabilityEventBus,
+	type ElicitRequest,
+	type ElicitResponse,
+	type InboundRequestResult,
+	type JsonRpcError,
+	type JsonRpcErrorResponse,
+	type McpClientCapabilityOptions,
+	type Root,
+	type SamplingDriverRegistry,
+	type SamplingRequest,
+	type SamplingResponse,
+	buildClientCapabilities,
+	capabilityNotOptedInError,
+	handleElicitation,
+	handleRootsList,
+	handleSampling,
+	jsonRpcError,
+	rootsListChangedNotification,
+} from "./capabilities.js"
+// TASK_0016: deferred tool loading via search_tools synthetic tools.
+export {
+	type DeferredContext,
+	type DeferredMcpTool,
+	type DeferredToolListResult,
+	eagerRegisterAndAnswer,
+	registerDeferredTools,
+} from "./deferred.js"
