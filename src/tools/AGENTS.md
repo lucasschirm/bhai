@@ -8,8 +8,6 @@ The in-process tool registry — the single source of truth for every callable t
 
 - `registry.ts` — `ToolRegistry` class + standalone `normalizeToolResult()` helper (TASK_0008). Stores `BHAIToolDefinition` records keyed by `name` in a `Map`, validates names against § 9.1's regex, implements shadowing (replace, no `tool.removed` fired), and fires `tool.registered`/`tool.removed` (§ 8.1) via the framework `EventBus`'s kernel bypass. Also satisfies the `ToolRegistrar` seam so `@Tool`-decorated methods register through it.
 - `registry.test.ts` — 26 tests covering object/sugar forms, shadowing, name validation, `normalizeToolResult`'s three branches, snapshot freshness, minimal filter subset, the `ToolRegistrar` seam, and accessors.
-- `availability.ts` — TASK_0017: `resolveAvailableTools()` (pure 3-step decision function per § 9.5), `applyToolFilter()`, `isToolTrusted()`, `ResolvedTool`. Resolution order: (1) static `ToolFilter`, (2) `contextPatchedTools` (replaces, not merges), (3) driver-capability gating. Trust flag derived from `McpServerConfig.trusted` (TASK_0013). UNRESOLVED: prompt-injected tool fallback not implemented.
-- `availability.test.ts` — 30 tests covering applyToolFilter (allow/deny/tags/excludeTags), resolveAvailableTools 3-step resolution, trust flag derivation, isToolTrusted, and the UNRESOLVED prompt-injection fallback documentation.
 
 ## Conventions
 

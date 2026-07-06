@@ -17,7 +17,7 @@ Holds the plugin subpath entry points shipped from the same package (ARCHITECTUR
 - **One `index.ts` per subpath**: the entry file is always `<name>/index.ts`, re-exporting the plugin's public surface. Subpath barrels use `.js` extensions in re-exports for strict-Node-ESM compatibility.
 - **Heavy deps stay peer dependencies**: model engines (e.g. `MLCEngine`) are injected by the host, never imported directly by the core. A plugin subpath may declare its own peer deps alongside its entry, but the core bundle never forces them.
 - **Adding a plugin** means updating three files together (see `.claude/rules/packaging.md`): `package.json` `exports`, `tsup.config.ts` `entry`, and `src/index.ts` (append one `export * from "./plugins/<name>/index.js"` line).
-- **Currently stubs**: every `index.ts` here is a placeholder (`export {}` with a comment naming the owning task) until the implementing task lands. **Exception**: `mcp/index.ts` is fully implemented (TASK_0011–TASK_0016) and exports `McpClient`, `McpHandshakeError`, `McpCallError`, `McpTimeoutError`, `McpClientOptions`, `ToolListDiff`, the approval gate surface (TASK_0013), the capabilities surface (TASK_0014), and the deferred loading surface (TASK_0016).
+- **Currently stubs**: every `index.ts` here is a placeholder (`export {}` with a comment naming the owning task) until the implementing task lands. **Exception**: `mcp/index.ts` is implemented (TASK_0011 + TASK_0012) and exports `McpClient`, `McpHandshakeError`, `McpCallError`, `McpTimeoutError`, `McpClientOptions`, and `ToolListDiff`.
 
 ## Consumers
 

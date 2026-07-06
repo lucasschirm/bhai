@@ -73,10 +73,7 @@ await bh.init();
 - **Drivers** — `BHAIDriver` interface (`listModels`, `capabilities`, `chat`).
   Two bundled (planned): WebLLM (browser/WebGPU) and Ollama (plain fetch).
 - **MCP client** — streamable-HTTP transport only (spec rev 2025-11-25).
-  Handles handshake, paginated discovery, live re-sync, progress/cancellation,
-  a human-in-the-loop approval gate (untrusted by default), opt-in client
-  capabilities (elicitation, sampling, roots), and deferred tool loading via
-  `search_tools` synthetic tools for large tool sets.
+  Handles handshake, paginated discovery, live re-sync, progress/cancellation.
 
 ## Environment boundary
 
@@ -114,15 +111,8 @@ pnpm build            # tsup build
 
 ## Documentation
 
-- `docs/getting-started.md` — package scaffolding, tooling, subpath exports.
 - `docs/ARCHITECTURE.md` — implemented architecture overview.
-- `docs/PROGRESS.md` — task completion status (TASK_0001–TASK_0012 done).
-- `docs/core/kernel.md` — `BHAI` class (`use`, `on`/`emit`, `init`/`dispose`, config, registry wiring).
-- `docs/core/event-bus.md` — `EventBus` (sequential dispatch, patch chaining, blocking, reserved namespaces).
-- `docs/core/plugins.md` — plugin forms, lifecycle, config contract, decorators.
-- `docs/core/types.md` — shared type declarations.
-- `docs/core/tool-registry.md` — tool registry (single source of truth, shadowing, events).
-- `docs/core/drivers.md` — driver registry and `listModels()` merge.
+- `docs/PROGRESS.md` — task completion status.
 - `docs/core/command-registry.md` — command registry docs.
 - `docs/plugins/mcp-client.md` — MCP client docs.
 - `../ARCHITECTURE.md` (parent repo) — full v0.1 design proposal.
