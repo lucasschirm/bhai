@@ -6,11 +6,12 @@ The kernel: the `BHAI` class (framework entry point, ARCHITECTURE.md § 6), the 
 
 ## Key files
 
-- `bhai.ts` — the `BHAI` class. Constructor + `use()` (TASK_0003), `on()`/`emit()` (TASK_0004), `init()`/`dispose()` (TASK_0005), `declareConfig`/`setConfig`/`getConfig` (TASK_0006), `addTool`/`removeTool`/`listTools` (TASK_0008), `addDriver`/`listModels` (TASK_0009), `addCommand`/`listCommands` (TASK_0010). Stubs for not-yet-implemented § 6 methods throw with a `TODO(TASK_XXXX)` comment naming the owner.
+- `bhai.ts` — the `BHAI` class. Constructor + `use()` (TASK_0003), `on()`/`emit()` (TASK_0004), `init()`/`dispose()` (TASK_0005), `declareConfig`/`setConfig`/`getConfig` (TASK_0006), `addTool`/`removeTool`/`listTools` (TASK_0008), `addDriver`/`listModels` (TASK_0009), `addCommand`/`listCommands` (TASK_0010), `bh.conversations.list()` (TASK_0029). Stubs for not-yet-implemented § 6 methods throw with a `TODO(TASK_XXXX)` comment naming the owner.
 - `event-bus.ts` — `EventBus` class (§ 8). Sequential awaited dispatch, patch chaining, blockable pipelines, reserved-namespace enforcement on public `emit()`, internal `dispatch()` bypass for kernel-originated events, global per-bus FIFO serialization.
 - `decorators.ts` — TC39 stage-3 decorators (`@Plugin`, `@On`, `@Tool`) for plugin form 3 (§ 7.2). Native decorators only — no `experimentalDecorators`.
 - `drivers.ts` — `DriverRegistry` (TASK_0009, § 10.1). Stores `BHAIDriver` instances keyed by `id`, fires `driver.registered`, merges `listModels()` across drivers. `modelSource` hook merge is TASK_0015's job (see seam comment).
 - `commands.ts` — `CommandRegistry` (TASK_0010, § 6). Stores `BHAICommandDefinition` records keyed by `name`, implements "last registration wins" shadowing (consistent with tool/driver registries), exposes `addCommand`/`listCommands`. No events fired for command registration/replacement.
+- `storage.ts` — kernel-side wiring for conversation persistence (TASK_0029, § 11.4). `resolveActiveConversationStore()` finds the last-registered `conversationStore` capability among plugins. `wireAutoSave()` subscribes to `bh.on('conversation.message', ...)` to call `store.save()` on every `message(sent)` event. `createConversationsAccessor()` returns the `bh.conversations` object, which delegates `list(query?)` to the store or throws if absent. No concrete store implementations — only kernel wiring + interfaces.
 - `index.ts` — core barrel. Re-exports the public kernel surface.
 
 ## Conventions

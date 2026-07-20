@@ -25,10 +25,14 @@ ARCHITECTURE.md § 6.
 6. **Driver registry** wiring (TASK_0009): `addDriver`/`listModels`.
 7. **Command registry** wiring (TASK_0010): `addCommand`/`listCommands`.
 
-Every other § 6 method (`createConversation`, `loadConversation`, `complete`,
-`embed`, `addMcp`, full `dispose`) is currently a stub that throws with a
-`TODO(TASK_XXXX)` comment naming the owning task, so accidental use surfaces
-immediately rather than silently no-op'ing.
+8. **Conversation lifecycle** (TASK_0023, TASK_0028): `createConversation`/
+   `loadConversation` — see `docs/core/conversation.md` for the full
+   conversation surface and agent loop this hands off to.
+
+`complete()`, `embed()`, and full `dispose()` teardown are still stubs that
+throw with a `TODO(TASK_XXXX)` comment naming the owning task (TASK_0032,
+TASK_0033, TASK_0035 respectively), so accidental use surfaces immediately
+rather than silently no-op'ing. `addMcp()` is implemented (TASK_0015).
 
 ## Public API
 

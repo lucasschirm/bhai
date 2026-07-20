@@ -35,35 +35,35 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0010 | Command registry                                      | [x]    |
 | 0011 | MCP client — handshake & discovery                    | [x]    |
 | 0012 | MCP client — resync, calls, progress, cancellation    | [x]    |
-| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [ ]    |
-| 0014 | MCP capabilities — elicitation, sampling, roots       | [ ]    |
-| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [ ]    |
-| 0016 | Deferred tool loading (`search_tools`)                | [ ]    |
-| 0017 | Tool availability filtering seam                      | [ ]    |
+| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [x]    |
+| 0014 | MCP capabilities — elicitation, sampling, roots       | [x]    |
+| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [x]    |
+| 0016 | Deferred tool loading (`search_tools`)                | [x]    |
+| 0017 | Tool availability filtering seam                      | [x]    |
 
 ## Phase 3 — Drivers & model selection
 
 | Task | Title                                   | Status |
 | ---- | --------------------------------------- | ------ |
-| 0018 | Transport retry policy & request events | [ ]    |
-| 0019 | WebLLM driver plugin                    | [ ]    |
-| 0020 | Ollama driver plugin                    | [ ]    |
-| 0021 | Credential resolution chain             | [ ]    |
-| 0022 | Model selection & switching             | [ ]    |
+| 0018 | Transport retry policy & request events | [x]    |
+| 0019 | WebLLM driver plugin                    | [x]    |
+| 0020 | Ollama driver plugin                    | [x]    |
+| 0021 | Credential resolution chain             | [x]    |
+| 0022 | Model selection & switching             | [x]    |
 
 ## Phase 4 — Conversations & the agent loop
 
 | Task | Title                                                  | Status |
 | ---- | ------------------------------------------------------ | ------ |
-| 0023 | Conversation surface skeleton                          | [ ]    |
-| 0024 | `start` event & system-prompt layering                 | [ ]    |
-| 0025 | Agent loop core — sendMessage, context, message states | [ ]    |
-| 0026 | Tool execution in the loop                             | [ ]    |
-| 0027 | Loop termination & guardrails                          | [ ]    |
-| 0028 | Conversation serialization contract                    | [ ]    |
-| 0029 | Storage interfaces (no implementations)                | [ ]    |
-| 0030 | Steering & concurrent input                            | [ ]    |
-| 0031 | Compaction pipeline                                    | [ ]    |
+| 0023 | Conversation surface skeleton                          | [x]    |
+| 0024 | `start` event & system-prompt layering                 | [x]    |
+| 0025 | Agent loop core — sendMessage, context, message states | [x]    |
+| 0026 | Tool execution in the loop                             | [x]    |
+| 0027 | Loop termination & guardrails                          | [x]    |
+| 0028 | Conversation serialization contract                    | [x]    |
+| 0029 | Storage interfaces (no implementations)                | [x]    |
+| 0030 | Steering & concurrent input                            | [x]    |
+| 0031 | Compaction pipeline                                    | [x]    |
 
 ## Phase 5 — Kernel utilities & reference examples
 
@@ -86,6 +86,44 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0041 | Security hardening & threat-model checklist | [ ]    |
 | 0042 | PEP mapping validation                      | [ ]    |
 | 0043 | Documentation & README (v0.1 scope)         | [ ]    |
+
+## Recently completed (TASK_0023–TASK_0031, Phase 4)
+
+Conversations & the agent loop — see `docs/core/conversation.md` for the full
+writeup. Summary:
+
+- **TASK_0023** — `BHAIConversationImpl` (`src/conversation/conversation.ts`):
+  the conversation surface, its private mirrored `EventBus`, `bh.createConversation`/
+  `bh.loadConversation`.
+- **TASK_0024** — `src/conversation/system-prompt.ts`: the `start` event,
+  four-layer system-prompt assembly, `prepend` message handling.
+- **TASK_0025** — `src/conversation/agent-loop.ts`: `sendMessage()`/
+  `addMessage()`, the `context` event (deep-copied payload), streaming
+  `message.delta`, the non-tool-calls exit path.
+- **TASK_0026** — tool execution in the loop: `beforeCall→call→processing*→
+  complete|error`, concurrent-by-default batching with `serial`/`serialTools`
+  opt-outs, original-call-order result reordering, validate-and-repair
+  (`maxToolRepairs`, default 2).
+- **TASK_0027** — the bounded, multi-turn loop: `maxIterations` (default 8),
+  the universal `_meta['bhai/terminate']` hint, `turn(end)` veto via
+  `continueWith`, real `abort()` semantics via a shared root `AbortController`.
+- **TASK_0028** — `src/conversation/snapshot.ts`: the full versioned
+  `{ v: 1, id, messages, model, params, usage, meta }` snapshot contract,
+  truncated-prefix loading (host-side forking enablement).
+- **TASK_0029** — `src/types/storage.ts` + `src/core/storage.ts`:
+  `ConversationStore`/`MemoryStore`/`SkillResolver` interfaces (no
+  implementations), auto-save on `message(sent)`, `bh.conversations.list()`.
+- **TASK_0030** — `deliverAs: 'immediate' | 'steer' | 'followUp'`
+  (`ConversationBusyError`, steer/followUp queues), real `waitForIdle()`,
+  the `idle` event.
+- **TASK_0031** — `src/conversation/compaction.ts`: `conversation.compact()`,
+  auto-compaction, `conversation.emit('compact', ...)` interception (closes
+  the seam `src/core/event-bus.ts` left in TASK_0004), never-delete-history
+  folding via `meta.contextIncluded`.
+
+118 new tests added across `src/conversation/*.test.ts` and
+`src/core/storage.test.ts` (376 → 494). All four gates
+(`typecheck`/`lint`/`test`/`build`) green.
 
 ## Recently completed (TASK_0010–TASK_0012)
 

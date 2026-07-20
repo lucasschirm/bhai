@@ -51,3 +51,15 @@ export type {
 // stays the single import point for downstream tasks. TASK_0015 (the public
 // `bh.addMcp()` entry point) consumes this type.
 export type { McpServerConfig } from "./mcp.js"
+// Storage types were added by TASK_0029: ConversationStore, MemoryStore,
+// SkillResolver interfaces plus their supporting shapes (ConversationSummary,
+// MemoryRecord, SkillInfo). These are re-exported from the types barrel for
+// uniform access by plugins and hosts.
+export type {
+	ConversationStore,
+	ConversationSummary,
+	MemoryStore,
+	MemoryRecord,
+	SkillResolver,
+	SkillInfo,
+} from "./storage.js"

@@ -24,6 +24,12 @@
 // one kernel directory; the behavioral contract is unchanged.
 
 import Ajv, { type ErrorObject } from "ajv"
+import {
+	type BHAIConversation,
+	BHAIConversationImpl,
+	type ConversationSnapshot,
+	type CreateConversationOptions,
+} from "../conversation/conversation.js"
 import { ToolRegistry } from "../tools/registry.js"
 import type { JSONSchema } from "../types/content.js"
 import type { EmitResult, Unsubscribe } from "../types/events.js"
@@ -31,8 +37,11 @@ import type {
 	BHAICommandDefinition,
 	BHAIDriver,
 	BHAIToolDefinition,
+	ConversationStore,
 	McpServerConfig,
+	MemoryStore,
 	ModelInfo,
+	SkillResolver,
 	ToolExecute,
 	ToolFilter,
 } from "../types/index.js"
@@ -51,6 +60,12 @@ import {
 	resolveGetMcpsHooks,
 	resolveModelSourceHooks,
 } from "./mcp-integration.js"
+import {
+	type ConversationsAccessor,
+	createConversationsAccessor,
+	resolveActiveConversationStore,
+	wireAutoSave,
+} from "./storage.js"
 
 // `ajv` is chosen as the JSON Schema validator for TASK_0006's config step
 // (§ 7.4) over alternatives (zod-to-JSON-Schema bridges, a hand-rolled
@@ -143,12 +158,12 @@ export interface BHAIPluginCapabilities {
 	auth?: unknown
 	/** Refined once the § 11.8 RAG task lands. */
 	retriever?: unknown
-	/** Refined once the § 11.4 skill-resolver task lands. */
-	skillResolver?: unknown
-	/** Refined once the § 11.4 conversation-store task lands. */
-	conversationStore?: unknown
-	/** Refined once the § 11.4 memory-store task lands. */
-	memoryStore?: unknown
+	/** Refined by TASK_0029 (§ 11.4): skill-resolver for '/slash' prompt expansion. */
+	skillResolver?: SkillResolver
+	/** Refined by TASK_0029 (§ 11.4): conversation-store for auto-save on message(sent). */
+	conversationStore?: ConversationStore
+	/** Refined by TASK_0029 (§ 11.4): memory-store for durable agent memory. */
+	memoryStore?: MemoryStore
 }
 
 /**
@@ -350,6 +365,26 @@ export class BHAI {
 	 */
 	private modelSourceModels: ModelInfo[] | undefined
 
+	/**
+	 * Accessor for conversation-store operations (TASK_0029, § 11.4).
+	 *
+	 * Populated during `bh.init()` with a {@link ConversationsAccessor} that delegates
+	 * to the active `ConversationStore` (if registered), or throws a descriptive error
+	 * if no store is present. The error-on-missing-store policy is intentional: a host
+	 * calling `list()` with no store almost certainly has a configuration bug.
+	 *
+	 * Currently exposes only `list(query?)`, which delegates to `store.list()`.
+	 * Future tasks may extend this with `load()`, `delete()`, etc.
+	 */
+	private conversationsAccessor: ConversationsAccessor = {
+		list: () => Promise.reject(new Error("bh.init() has not completed yet")),
+	}
+
+	/** Public read-only accessor for the conversations API. */
+	get conversations(): ConversationsAccessor {
+		return this.conversationsAccessor
+	}
+
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
 		// Seed host-supplied config values from the constructor option. Each
@@ -424,9 +459,11 @@ export class BHAI {
 	/**
 	 * Emit a namespaced custom event on the framework bus (§ 8.4). Throws
 	 * synchronously (before dispatch begins) if `event` is a reserved kernel
-	 * name or an un-namespaced custom name; the one documented exception is
-	 * `compact`, a legal manual trigger. Resolves with an {@link EmitResult}
-	 * after the dispatch and any re-entrantly queued dispatches have settled.
+	 * name or an un-namespaced custom name. Special case (TASK_0031): `emit('compact', ...)`
+	 * always throws with a clear message, since compaction is conversation-scoped
+	 * and cannot be triggered from the framework level. Use `conversation.emit('compact', ...)`
+	 * instead. Resolves with an {@link EmitResult} after the dispatch and any
+	 * re-entrantly queued dispatches have settled.
 	 *
 	 * Implemented by TASK_0004 as a thin delegation to the internally-owned
 	 * {@link EventBus} instance.
@@ -436,6 +473,12 @@ export class BHAI {
 		payload: Payload,
 		options?: DispatchOptions,
 	): Promise<EmitResult<Payload>> {
+		// Compaction is conversation-scoped (TASK_0031) — throw on framework-level emit
+		if (event === "compact") {
+			throw new Error(
+				"bh.emit('compact', ...): compaction is conversation-scoped — call conversation.emit('compact', ...) instead (TASK_0031)",
+			)
+		}
 		return this.bus.emit(event, payload, options)
 	}
 
@@ -510,21 +553,96 @@ export class BHAI {
 		this.modelSourceModels = await resolveModelSourceHooks(modelSourceHooks)
 		await resolveGetMcpsHooks(getMcpsHooks, this.mcpRegistry)
 
+		// TASK_0029 (§ 11.4): Wire up conversation-store auto-save and initialize
+		// the conversations accessor. This happens after all hook resolution so the
+		// active store (if any) is known, and before the `initialize` event fires
+		// so any handler can already call `bh.conversations.list()`.
+		const activeConversationStore = resolveActiveConversationStore(this.plugins)
+		wireAutoSave(this, activeConversationStore)
+		this.conversationsAccessor = createConversationsAccessor(activeConversationStore)
+
 		await this.bus.dispatch("initialize", { bh: this })
 	}
 
 	/**
-	 * TODO(TASK_0023): create a new conversation (§ 11.1).
-	 * TASK_0005 implements a partial dispose() for plugin-hook ordering; full
-	 * teardown semantics are TASK_0035's.
+	 * Create a new conversation (ARCHITECTURE.md § 11.1).
+	 *
+	 * Behavior per § 8.5 step 3:
+	 * 1. Construct a new `BHAIConversationImpl` (fresh `id`, empty `messages`,
+	 *    `status: 'idle'`, `meta: {}`, `usage: { inputTokens: 0, outputTokens: 0 }`).
+	 * 2. Determine whether a model is already known: if `options?.model` is set,
+	 *    OR this `BHAI` instance was constructed with a `defaultModel`, the
+	 *    conversation has an explicit/default model and `model.resolve` must NOT
+	 *    fire. Otherwise, fire `model.resolve` with payload
+	 *    `{ catalogue, conversation }` (obtain `catalogue` via `listModels()`,
+	 *    which is already implemented). Await the result — a handler may return
+	 *    `{ model }` to pick one.
+	 * 3. Fire `conversation.created` (via the shared mirroring mechanism) with
+	 *    payload `{ conversation }`.
+	 * 4. Return the conversation.
 	 */
-	async createConversation(): Promise<never> {
-		throw new Error("bh.createConversation(): not implemented — see TASK_0023")
+	async createConversation(options?: CreateConversationOptions): Promise<BHAIConversation> {
+		// Step 1: Construct the conversation with fresh state
+		const conversation = new BHAIConversationImpl(this, options)
+
+		// Step 2: Determine model and fire model.resolve if needed
+		const explicitModel = options?.model ?? this.options.defaultModel
+		if (!explicitModel) {
+			// No explicit/default model — fire model.resolve
+			const catalogue = await this.listModels()
+			const modelResolveResult = await this.bus.dispatch("model.resolve", {
+				catalogue,
+				conversation,
+			})
+			// If a handler returned a model patch, apply it
+			if (modelResolveResult.patch && "model" in modelResolveResult.patch) {
+				conversation._setResolvedModel(modelResolveResult.patch.model as string | undefined)
+			}
+		} else {
+			// Explicit or default model provided — set it directly
+			conversation._setResolvedModel(explicitModel)
+		}
+
+		// Step 3: Fire conversation.created via the shared mirroring mechanism
+		await conversation._fireCreated()
+
+		// Step 4: Return the conversation
+		return conversation
 	}
 
-	/** TODO(TASK_0023): load a conversation from a snapshot (§ 11.3). */
-	async loadConversation(): Promise<never> {
-		throw new Error("bh.loadConversation(): not implemented — see TASK_0023")
+	/**
+	 * Load a conversation from a snapshot (ARCHITECTURE.md § 11.3).
+	 *
+	 * For this task only (full contract is TASK_0028's job): accept any value
+	 * loosely matching the shape `{ v?, id: string, messages: unknown[], model?, params?, usage?, meta? }`.
+	 * Do a minimal presence/type check and throw a plain Error if even that loose
+	 * shape doesn't hold. Do NOT implement version-migration policy, full message-
+	 * shape validation, or model-re-resolution-on-missing-driver here.
+	 *
+	 * Behavior per § 8.5:
+	 * 1. Construct a `BHAIConversationImpl` reusing the snapshot's `id` (not a
+	 *    freshly generated one), `messages` (shallow-copied), `meta` (from
+	 *    snapshot, defaulting to `{}`), `usage` (from snapshot, defaulting to
+	 *    zeros), `status: 'idle'`.
+	 * 2. Mark the conversation as already started so TASK_0024's `ensureStarted()`
+	 *    never fires `start` for a loaded conversation.
+	 * 3. Determine whether the snapshot's model is still available (minimal check:
+	 *    is `snapshot.model` a non-empty string that appears in `listModels()`'s
+	 *    output). If unavailable, fire `model.resolve`. If available, use directly.
+	 * 4. Fire `conversation.loaded` (via the shared mirroring mechanism) with
+	 *    payload `{ conversation, snapshot }` — NOT `conversation.created`.
+	 * 5. Return the conversation.
+	 */
+	async loadConversation(
+		snapshot: unknown,
+		options?: CreateConversationOptions,
+	): Promise<BHAIConversation> {
+		// Delegate to fromSnapshot() for full versioned reconstruction contract.
+		// This replaces the loose TASK_0023 shape check with the full TASK_0028
+		// contract: version validation, shape checking, message restoration,
+		// model re-resolution, and proper event firing.
+		const { fromSnapshot } = await import("../conversation/snapshot.js")
+		return fromSnapshot(snapshot, this, options)
 	}
 
 	/**
@@ -872,6 +990,62 @@ export class BHAI {
 	/** @internal Read-only view of the stored host option for a key. */
 	__testOption<K extends keyof BHAIHostOptions>(key: K): BHAIHostOptions[K] {
 		return this.options[key]
+	}
+
+	/**
+	 * Internal: dispatch an event on the framework bus via the unguarded `dispatch()` path.
+	 *
+	 * Used by `BHAIConversationImpl` to fire reserved framework events
+	 * (e.g. `conversation.message`, `conversation.context`) that skips the
+	 * public `emit()`'s reserved-name check. This is the same internal bypass
+	 * the kernel uses for its own reserved-name events.
+	 *
+	 * @internal
+	 */
+	_dispatch<Payload>(
+		event: string,
+		payload: Payload,
+		options?: DispatchOptions,
+	): Promise<EmitResult<Payload>> {
+		return this.bus.dispatch(event, payload, options)
+	}
+
+	/**
+	 * Internal: get a registered driver by ID.
+	 *
+	 * Returns the driver if registered, undefined otherwise. Used by TASK_0025's
+	 * agent loop to resolve a conversation's model ref to an actual driver instance.
+	 *
+	 * @internal
+	 */
+	_getDriver(driverId: string): BHAIDriver | undefined {
+		return this.driverRegistry.get(driverId)
+	}
+
+	/**
+	 * Internal: get a tool definition by name.
+	 *
+	 * Returns the registered `BHAIToolDefinition` or `undefined` if not found.
+	 * Used by TASK_0026's agent-loop tool-execution pipeline to look up tools
+	 * for validation and execution.
+	 *
+	 * @internal
+	 */
+	_getTool(name: string): BHAIToolDefinition | undefined {
+		return this.toolRegistry.get(name)
+	}
+
+	/**
+	 * Internal: get the host's default system prompt.
+	 *
+	 * Returns the system prompt provided in the `BHAIHostOptions` at construction,
+	 * or undefined if none was provided. Used by `BHAIConversationImpl`'s constructor
+	 * to compute layer 1-2 of the system-prompt assembly.
+	 *
+	 * @internal
+	 */
+	get _hostSystemPrompt(): string | undefined {
+		return this.options.systemPrompt
 	}
 
 	// ---------------------------------------------------------------------------
