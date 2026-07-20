@@ -41,13 +41,15 @@ Per ARCHITECTURE.md § 11.1, a conversation encapsulates:
   - Additional tests for edge cases and accumulation semantics
   - Handler idiom verification (read-then-append for prepend accumulation)
 
-- **`agent-loop.ts`** (TASK_0025–0026) — The unbounded agent loop:
+- **`agent-loop.ts`** (TASK_0025–0026, with TASK_0035 bug fixes) — The unbounded agent loop:
   - `sendMessage(conversation, content, options)` — Main entry point, implements full loop
   - `addMessage(conversation, content, role, options)` — Message injection without loop
   - `effectiveContextMessages(conversation)` — Filter messages by `meta.contextIncluded`
+  - `applyContextSystemPromptPatch(conversation, patch)` — Helper for layer-4 system-prompt patching (new in TASK_0035: now honors `appendSystemPrompt` in addition to `systemPrompt`)
   - Helper functions `constructMessage()` (private)
   - Implements TASK_0025: context event, driver call, delta/reasoning/tool-call buffering
   - Implements TASK_0026: unbounded loop continuation on `stopReason === 'tool-calls'`
+  - TASK_0035 fixes: `context` event payload now includes live `conversation` reference (was missing). `turn(start)` event payload now also includes live `conversation` reference (per § 11.6/11.7 contract).
 
 - **`agent-loop.test.ts`** (TASK_0025) — Test suite for basic message/context/streaming:
   - message(before) blocking

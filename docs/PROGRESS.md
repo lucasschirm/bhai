@@ -69,13 +69,13 @@ Source of truth for task files: `../tasks/` (parent repo).
 
 | Task | Title                             | Status |
 | ---- | --------------------------------- | ------ |
-| 0032 | `complete()` one-shot LLM utility | [ ]    |
-| 0033 | `embed()` side channel            | [ ]    |
-| 0034 | `getContributions()` accessor     | [ ]    |
-| 0035 | `dispose()` teardown              | [ ]    |
-| 0036 | Example: Task-management plugin   | [ ]    |
-| 0037 | Example: Agent-memory plugin      | [ ]    |
-| 0038 | Example: RAG plugin (both shapes) | [ ]    |
+| 0032 | `complete()` one-shot LLM utility | [x]    |
+| 0033 | `embed()` side channel            | [x]    |
+| 0034 | `getContributions()` accessor     | [x]    |
+| 0035 | `dispose()` teardown              | [x]    |
+| 0036 | Example: Task-management plugin   | [x]    |
+| 0037 | Example: Agent-memory plugin      | [x]    |
+| 0038 | Example: RAG plugin (both shapes) | [x]    |
 
 ## Phase 6 — Interop, validation, docs
 
@@ -124,6 +124,54 @@ writeup. Summary:
 118 new tests added across `src/conversation/*.test.ts` and
 `src/core/storage.test.ts` (376 → 494). All four gates
 (`typecheck`/`lint`/`test`/`build`) green.
+
+## Recently completed (TASK_0032–TASK_0038, Phase 5)
+
+Kernel side-channels (`complete()` / `embed()`), generic contribution
+accessors, full lifecycle teardown, and three reference example plugins —
+see `docs/core/kernel.md`, `docs/examples.md`, and the plugin files themselves
+for full details. Summary:
+
+- **TASK_0032** — `src/core/complete.ts`: `bh.complete(req)`, a one-shot LLM
+  call side-channel detached from any conversation (zero event-bus activity,
+  full model-resolution reuse, abort-signal support, synthetic message mutation
+  guards, synthetic-message `append()` / `setContent()` rejection).
+- **TASK_0033** — `src/core/embed.ts`: `bh.embed(req)`, embedding side-channel
+  with a capability-guard pattern (throws if resolved driver lacks `embeddings`
+  capability), input normalization (string → array), single-string and
+  string-array arity support.
+- **TASK_0034** — `bh.getContributions<T>(key)` method added to `BHAI` class
+  in `src/core/bhai.ts`: generic multi-plugin accessor for registered capability
+  contributions (e.g. `bh.getContributions<Retriever>('retriever')`), returns
+  array in registration order, empty array for unregistered keys.
+- **TASK_0035** — `bh.dispose()` full teardown in `src/core/bhai.ts`:
+  abort all live conversations (waits for idle), fire `dispose` event (before
+  hooks per § 8.5), run plugin `dispose` hooks in reverse order, close every
+  MCP session (via new optional `McpClientLike.close?()` in
+  `src/core/mcp-integration.ts`, `Promise.allSettled`-based so one failure
+  doesn't block others), flip `disposed` flag that rejects post-dispose calls.
+  Bug fixes: `context` event patch now honors `appendSystemPrompt`, and both
+  `context` / `turn(start)` event payloads now include live `conversation`
+  reference.
+- **TASK_0036** — `examples/task-plugin.ts` (+ test): task-management plugin
+  demonstrating plugin authoring forms, event subscriptions, `context`
+  injection, and `turn(end)` veto.
+- **TASK_0037** — `examples/memory-plugin.ts` (+ test): agent-memory plugin
+  showing lifecycle hooks, `bh.complete()` for fact extraction, start-time
+  memory recall with injection-defense sentence.
+- **TASK_0038** — `examples/rag-plugin.ts` (+ test): RAG plugin (single
+  capability-object plugin) demonstrating both retrieval shapes from § 11.8 —
+  Shape 1: an agentic `search_knowledge` tool the model calls on demand; Shape 2:
+  automatic `context`-time injection on every user turn, sorted by score and
+  truncated to `topK` — both sourced from `bh.getContributions<Retriever>('retriever')`,
+  with a `configSchema` (`embeddingModel`, `topK`).
+
+99 new tests added: 68 across `src/core/{complete,embed,contributions,dispose}.test.ts`,
+19 across `examples/{task,memory,rag}-plugin.test.ts`, and 12 added to the
+pre-existing `src/conversation/agent-loop.test.ts` (the two prerequisite kernel
+fixes — layer-4 `appendSystemPrompt` support and the `context`/`turn(start)`
+`conversation` field) (494 → 593). All four gates (`typecheck`/`lint`/`test`/`build`)
+green.
 
 ## Recently completed (TASK_0010–TASK_0012)
 

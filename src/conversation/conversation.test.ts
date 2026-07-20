@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { BHAI } from "../core/bhai.js"
 import { EventBus } from "../core/event-bus.js"
+import { NoModelError } from "../core/models.js"
 import {
 	type BHAIConversation,
 	BHAIConversationImpl,
@@ -323,16 +324,17 @@ describe("TASK_0023: Conversation surface skeleton", () => {
 		}).toThrow(/not implemented — see TASK_0025/)
 	})
 
-	it("compact() is implemented (TASK_0031)", async () => {
+	it("compact() delegates to the real bh.complete() (TASK_0032) and surfaces NoModelError when no model is resolvable", async () => {
 		const conversation = await bh.createConversation({ model: "test/model" })
 
 		// Add a message so there's something to compact
 		await conversation.addMessage("Test message", "user")
 
-		// compact() without a mock will throw from bh.complete() (which is a TASK_0032 stub).
-		// This verifies the method is implemented and callable (it's not a stub anymore).
-		// It delegates to bh.complete() when no completeFn is provided.
-		await expect(conversation.compact()).rejects.toThrow(/not implemented.*TASK_0032/)
+		// compact() without a completeFn override calls bh.complete() (now fully implemented in TASK_0032).
+		// Since no driver is registered and no defaultModel is set on this BHAI instance,
+		// bh.complete() will throw NoModelError when trying to resolve a model.
+		// This verifies that compact() properly delegates and propagates real errors from bh.complete().
+		await expect(conversation.compact()).rejects.toBeInstanceOf(NoModelError)
 	})
 
 	it("toJSON() returns a snapshot-like object", async () => {

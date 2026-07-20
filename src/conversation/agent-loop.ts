@@ -68,6 +68,37 @@ export function effectiveContextMessages(conversation: BHAIConversationImpl): BH
 }
 
 /**
+ * Apply context-event system-prompt patches to a base prompt.
+ *
+ * Implements layer 4 of § 11.6 (ARCHITECTURE.md 1165–1204) with three-way precedence:
+ * 1. If `patch.systemPrompt !== undefined` → replace outright (highest precedence).
+ * 2. Else if `patch.appendSystemPrompt !== undefined` → append to `base` with a blank-line separator.
+ * 3. Else → `base` unchanged (fallback).
+ *
+ * Appending uses the same rule as layer 3: if base is non-empty, append with `\n\n` separator;
+ * if base is empty, use the appendSystemPrompt value directly.
+ *
+ * Exported so this logic is directly unit-testable and also exercised through sendMessage's
+ * full integration path.
+ *
+ * @param base The pre-context system prompt (from layer 3).
+ * @param patch Context-event patch object, may contain `systemPrompt` and/or `appendSystemPrompt`.
+ * @returns The effective system prompt after applying the patch.
+ */
+export function applyContextSystemPromptPatch(
+	base: string,
+	patch: { systemPrompt?: string; appendSystemPrompt?: string },
+): string {
+	if (patch.systemPrompt !== undefined) {
+		return patch.systemPrompt
+	}
+	if (patch.appendSystemPrompt !== undefined) {
+		return base ? `${base}\n\n${patch.appendSystemPrompt}` : patch.appendSystemPrompt
+	}
+	return base
+}
+
+/**
  * Construct a BHAIMessage from a string or ContentBlock array.
  *
  * @internal Used by sendMessage and addMessage (including tool results).
@@ -318,6 +349,7 @@ export async function sendMessage(
 			turn: iteration,
 			messages: undefined,
 			toolResults: undefined,
+			conversation,
 		} as unknown)
 
 		// Resolve driver before building context.
@@ -358,6 +390,7 @@ export async function sendMessage(
 		})) as BHAIMessage[]
 
 		const contextPayload = {
+			conversation,
 			messages: clonedMessages,
 			systemPrompt: structuredClone(systemPrompt),
 			tools: [...allTools],
@@ -373,8 +406,10 @@ export async function sendMessage(
 		const contextPatch = contextResult.patch as Record<string, unknown> | undefined
 		const effectiveMessages =
 			(contextPatch?.messages as BHAIMessage[] | undefined) ?? contextPayload.messages
-		const effectiveSystemPrompt =
-			(contextPatch?.systemPrompt as string | undefined) ?? contextPayload.systemPrompt
+		const effectiveSystemPrompt = applyContextSystemPromptPatch(contextPayload.systemPrompt, {
+			systemPrompt: contextPatch?.systemPrompt as string | undefined,
+			appendSystemPrompt: contextPatch?.appendSystemPrompt as string | undefined,
+		})
 		const effectiveTools =
 			(contextPatch?.tools as typeof allTools | undefined) ?? contextPayload.tools
 

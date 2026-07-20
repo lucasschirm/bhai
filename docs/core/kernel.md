@@ -29,10 +29,10 @@ ARCHITECTURE.md § 6.
    `loadConversation` — see `docs/core/conversation.md` for the full
    conversation surface and agent loop this hands off to.
 
-`complete()`, `embed()`, and full `dispose()` teardown are still stubs that
-throw with a `TODO(TASK_XXXX)` comment naming the owning task (TASK_0032,
-TASK_0033, TASK_0035 respectively), so accidental use surfaces immediately
-rather than silently no-op'ing. `addMcp()` is implemented (TASK_0015).
+**TASK_0032–TASK_0035**: `complete()` (one-shot LLM calls, TASK_0032),
+`embed()` (embeddings side-channel, TASK_0033), `getContributions()` (generic
+multi-plugin accessor, TASK_0034), and full `dispose()` teardown (TASK_0035)
+are fully implemented. `addMcp()` is implemented (TASK_0015).
 
 ## Public API
 
@@ -87,15 +87,63 @@ internal `dispatch()` bypass to fire reserved events like `initialize`,
 `dispose`, `error`, `config.changed`, `tool.registered`, `tool.removed`,
 `driver.registered`.
 
+### Side channels: `complete()` / `embed()`
+
+Two detached async utilities for one-shot LLM operations outside conversation
+lifecycle (TASK_0032 / TASK_0033):
+
+**`complete(req: CompleteRequest): Promise<CompleteResult>`** — single LLM
+call with no conversation. The `req` shape mirrors `ChatRequest` (model,
+messages, systemPrompt, params, signal). The `messages` field accepts either
+a string (normalized to single user message) or a `BHAIMessage[]` array.
+Returns `{ text: string, usage: { inputTokens, outputTokens } }`. Model
+resolution uses the same four-tier resolver as conversations, including
+default-model fallback. **Zero conversation-bus events fire** (`message`,
+`tool`, `context`, `loop`, `turn`). Synthetic messages reject `append()` and
+`setContent()` mutations to maintain purity.
+
+**`embed(req: EmbedRequest): Promise<EmbedResult>`** — embedding side-channel
+with capability guarding. The `req` shape includes `model`, `input` (string
+or string[]), and optional `signal`. Returns `{ embeddings: number[][], usage?: { inputTokens, outputTokens } }`.
+**Throws** if the resolved driver's `embeddings` capability is false or
+undefined (not declared or explicitly disabled) — never silent fallback. If
+`embeddings` is true but the driver's `embed()` is undefined, throws with
+a distinct internal-consistency error. Input normalization: single strings
+become `[string]`; arrays pass through. Output always preserves array-of-arrays
+shape (single input → `[[...]]`, not `[...]`). Usage is passed through
+from the driver or omitted if not provided.
+
+Both methods reuse the model-resolution machinery (four-tier: explicit model
+ref → default → host option → first available), so they respect the same
+resolution contracts as conversations.
+
+### `getContributions<T>(key: string): T[]`
+
+Generic multi-plugin accessor for registered capability contributions
+(TASK_0034). Returns all contributions under a given key in registration
+order. For example, `bh.getContributions<Retriever>('retriever')` returns
+an array of every `Retriever` object passed via `bh.use({ retriever })`.
+Returns an empty array if no contributions exist under the key. Unregistered
+keys do not throw — they simply return `[]`. The returned array is a
+snapshot at call time and is safe for immediate iteration. Factory-form
+plugins (bare functions) are silently skipped since they have no capability
+keys to contribute.
+
 ### Lifecycle: `init()` / `dispose()`
 
 - `init(): Promise<void>` — runs each capability-object plugin's
   `initialize` hook in **registration order**, fires the `initialize`
   framework event, then runs config validation/defaulting (TASK_0006).
-- `dispose(): Promise<void>` — runs each plugin's `dispose` hook in
-  **reverse registration order** and fires the `dispose` event. This is
-  the partial lifecycle dispose; full teardown semantics land in
-  TASK_0035.
+- `dispose(): Promise<void>` — **full teardown** (TASK_0035): (1) aborts all
+  live conversations (waits for `idle` state), (2) fires the `dispose` event,
+  (3) runs each plugin's `dispose` hook in **reverse registration order**,
+  (4) closes every registered MCP session (via optional `McpClientLike.close?()`
+  with `Promise.allSettled` so one failure doesn't block others), (5) sets
+  an internal `disposed` flag that rejects subsequent calls to `use()`,
+  `addTool()`, `addDriver()`, `addCommand()`, `addMcp()`, `createConversation()`,
+  `loadConversation()`, `complete()`, and `embed()` with a "disposed" error.
+  The `dispose` event fires **before** plugin hooks run (per ARCHITECTURE.md
+  § 8.5 "hooks run after it" wording).
 
 ### Config: `declareConfig` / `setConfig` / `getConfig`
 
@@ -130,16 +178,10 @@ validator with no environment-specific bindings.
 
 ## Test coverage
 
-21 tests in `src/core/bhai.test.ts`:
+21 tests in `src/core/bhai.test.ts` (core lifecycle, registration, event bus wiring, config).
 
-- Constructor + host-options storage.
-- `use()` form 1 (factory) and form 2 (capability object) normalization.
-- Capability-key allowlist enforcement (unknown keys rejected).
-- Duplicate-name de-duplication.
-- `on()`/`emit()` wiring (delegates to `EventBus`).
-- `init()`/`dispose()` ordering (delegates to lifecycle module).
-- Config declare/set/get round-trip.
-- `addTool`/`addDriver`/`addCommand` delegation to their registries.
-- Stub methods throw with the owning task's ID.
-- Internal test accessors (`__testPluginCount`, `__testHasPlugin`,
-  `__testOption`) for invariant assertions.
+TASK_0032–TASK_0035 add new test files:
+- 22 tests in `src/core/complete.test.ts` (one-shot LLM utility, model resolution, abort signals, synthetic message mutation guards).
+- 25 tests in `src/core/embed.test.ts` (embedding capability guarding, input/output arity, default model resolution, abort signals, driver error handling).
+- 6 tests in `src/core/contributions.test.ts` (multi-plugin accessors, registration order, unregistered keys).
+- 15 tests in `src/core/dispose.test.ts` (full teardown sequence, conversation abortion, MCP session closing, plugin hook ordering, post-dispose call guards).

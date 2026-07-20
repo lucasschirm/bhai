@@ -7,8 +7,9 @@
 
 ## Status
 
-Pre-v0.1. Active implementation in progress — see `docs/PROGRESS.md` for the
-current task completion status.
+Pre-v0.1. Phase 5 (kernel utilities and reference examples) complete. Phase 6
+(interop, security, PEP mapping, final docs) in progress — see `docs/PROGRESS.md`
+for the current task completion status.
 
 ## Installation
 
@@ -60,11 +61,17 @@ bh.use({
 await bh.init();
 ```
 
+See `examples/` in the repository for fuller reference plugins demonstrating
+the kernel's extension surface (task-management, agent-memory, and RAG patterns).
+
 ## Core concepts
 
 - **Kernel (`BHAI` class)** — owns plugin registration (`use`), the event bus
   (`on`/`emit`), conversation lifecycle (`createConversation`/
-  `loadConversation`), tool/driver/command registries.
+  `loadConversation`), tool/driver/command registries, side-channels
+  (`complete()` for one-shot LLM calls, `embed()` for embeddings),
+  `getContributions()` for multi-plugin capability accessors, and full lifecycle
+  teardown (`dispose()`).
 - **Plugin system** — every plugin normalizes to `{ name, setup(bh) }`. Three
   authoring styles: bare factory function, capability object, or
   `@Plugin`/`@On`/`@Tool` decorated class (TC39 stage-3 decorators).
@@ -81,8 +88,8 @@ await bh.init();
 - **Tools** — a BHAI tool definition _is_ an MCP `Tool` object plus a local
   `execute` binding; results _are_ MCP `CallToolResult`s. Local and remote
   MCP tools share one registry.
-- **Drivers** — `BHAIDriver` interface (`listModels`, `capabilities`, `chat`).
-  Two bundled: WebLLM (browser/WebGPU) and Ollama (plain `fetch`).
+- **Drivers** — `BHAIDriver` interface (`listModels`, `capabilities`, `chat`,
+  optional `embed`). Two bundled: WebLLM (browser/WebGPU) and Ollama (plain `fetch`).
 - **MCP client** — streamable-HTTP transport only (spec rev 2025-11-25).
   Handles handshake, paginated discovery, live re-sync, progress/cancellation.
 
@@ -127,6 +134,7 @@ pnpm build            # tsup build
 - `docs/PROGRESS.md` — task completion status.
 - `docs/core/kernel.md` — the `BHAI` kernel class.
 - `docs/core/conversation.md` — conversations & the agent loop (Phase 4).
+- `docs/examples.md` — reference plugins (task-management, agent-memory, RAG).
 - `docs/core/event-bus.md`, `docs/core/tool-registry.md`,
   `docs/core/command-registry.md`, `docs/core/drivers.md`,
   `docs/core/models.md`, `docs/core/credentials.md`, `docs/core/plugins.md`,

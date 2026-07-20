@@ -8,12 +8,12 @@ implementation documentation (`docs/`). The parent directory holds only the
 v0.1 design proposal (`ARCHITECTURE.md`) and the task breakdown (`tasks/`) —
 all code lives here.
 
-## Current state (TASK_0001–TASK_0022 complete)
+## Current state (TASK_0001–TASK_0038 complete)
 
-Phase 0 (foundations), Phase 1 (kernel core), Phase 2 (tool/driver/command
-registries + MCP client), and the first five tasks of Phase 3 (transport
-retry, WebLLM driver, Ollama driver, credential resolution, model selection)
-are implemented. See `docs/PROGRESS.md` for the full task status.
+Phases 0–5 are implemented: foundations, kernel core, tool/driver/command
+registries + MCP client, drivers & model selection, conversations & the agent
+loop, and kernel utilities & reference examples. See `docs/PROGRESS.md` for
+the full task status.
 
 Implemented:
 
@@ -21,7 +21,8 @@ Implemented:
   `vitest.config.ts`, `biome.json`, `husky`) — ESM-only, three-tier subpath
   exports, native TC39 stage-3 decorators.
 - **Kernel** (`src/core/bhai.ts`) — `BHAI` class: `use()`, `on()`/`emit()`,
-  `init()`/`dispose()`, config contract, registry wiring.
+  `init()`/`dispose()`, config contract, registry wiring, `complete()` /
+  `embed()` side-channels, `getContributions()` accessor, full teardown.
 - **Event bus** (`src/core/event-bus.ts`) — sequential dispatch, patch
   chaining, blockable pipelines, reserved-namespace enforcement.
 - **Plugin system** (`src/core/decorators.ts`, `lifecycle.ts`, `config.ts`)
@@ -53,9 +54,19 @@ Implemented:
   with deferred application + `model.changed` event). Error types:
   `AmbiguousModelError`, `ModelNotFoundError`, `NoModelError`,
   `ModelUnavailableError`.
+- **Conversations & the agent loop** — see `docs/core/conversation.md` for
+  full detail. Summary: conversation surface, system-prompt layering, the
+  agent loop with tool execution, loop termination & guardrails, serialization,
+  storage interfaces, concurrent input steering, and compaction pipeline.
+- **Kernel side-channels** (`src/core/complete.ts`, `src/core/embed.ts`) —
+  `complete()` one-shot LLM calls and `embed()` embedding side-channel, both
+  with full model-resolution reuse and capability guarding.
+- **Reference example plugins** (`examples/`) — three fitness-test plugins
+  proving the kernel extension surface is complete: task-management plugin,
+  agent-memory plugin, and RAG plugin (both agentic and automatic shapes).
 
-Not yet implemented: conversations/agent loop (Phase 4), interop adapters
-(TASK_0039/0040), `complete()`/`embed()` (TASK_0032/0033).
+Not yet implemented: Phase 6 (interop adapters TASK_0039/0040, security
+hardening TASK_0041, PEP mapping TASK_0042, final docs TASK_0043).
 
 ## Key files
 

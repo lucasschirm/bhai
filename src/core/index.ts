@@ -80,3 +80,31 @@ export {
 	runCompactionPipeline,
 	type CompleteFn,
 } from "../conversation/compaction.js"
+// TASK_0032: One-shot LLM utility — `bh.complete()` for plugins needing autonomous calls.
+export {
+	complete,
+	type CompleteRequest,
+	type CompleteResult,
+} from "./complete.js"
+// TASK_0033: Embedding side channel — `bh.embed()` for RAG plugins.
+export {
+	embed,
+	type EmbedRequest,
+	type EmbedResult,
+} from "./embed.js"
+// TASK_0022: Model selection & switching — catalogue merge, resolution order, ambiguity handling.
+export {
+	AmbiguousModelError,
+	ModelNotFoundError,
+	NoModelError,
+	ModelUnavailableError,
+	parseModelRef,
+	resolveModelRef,
+	listModels,
+	resolveConversationModel,
+	setModel,
+	type ResolveConversationModelOptions,
+	type ConversationModelState,
+	type SetModelResult,
+	type ModelChangedPayload,
+} from "./models.js"

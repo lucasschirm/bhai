@@ -107,7 +107,7 @@ describe("BHAI.dispose — hook reverse ordering (§ 7.3 step 4)", () => {
 		expect(order).toEqual(["B", "A"])
 	})
 
-	it("fires the dispose framework event after all dispose hooks resolve", async () => {
+	it("fires the dispose framework event before dispose hooks run (§ 8.5)", async () => {
 		const order: string[] = []
 		const bh = new BHAI()
 		bh.use({
@@ -128,7 +128,10 @@ describe("BHAI.dispose — hook reverse ordering (§ 7.3 step 4)", () => {
 
 		await bh.dispose()
 
-		expect(order).toEqual(["B", "A", "event"])
+		// Per ARCHITECTURE.md § 8.5: "plugins' dispose hooks run in reverse order
+		// after it" (after the dispose event). This corrects a prior assumption
+		// that had hooks running first — the event must fire first.
+		expect(order).toEqual(["event", "B", "A"])
 	})
 })
 

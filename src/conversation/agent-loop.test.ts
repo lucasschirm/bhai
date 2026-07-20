@@ -5,7 +5,12 @@ import type { Mock } from "vitest"
 import { BHAI } from "../core/bhai.js"
 import type { ContentBlock } from "../types/content.js"
 import type { BHAIDriver, ChatRequest, DriverEvent } from "../types/driver.js"
-import { addMessage, effectiveContextMessages, sendMessage } from "./agent-loop.js"
+import {
+	addMessage,
+	applyContextSystemPromptPatch,
+	effectiveContextMessages,
+	sendMessage,
+} from "./agent-loop.js"
 import type { BHAIConversationImpl } from "./conversation.js"
 
 /**
@@ -502,5 +507,212 @@ describe("TASK_0025: Agent loop core", () => {
 		expect(result.meta.source).toBe("api")
 		expect(result.meta.custom).toBe(123)
 		expect(result.meta.contextIncluded).toBe(true) // default
+	})
+
+	// =========================================================================
+	// Tests 16-20: applyContextSystemPromptPatch helper (layer 4 system-prompt logic)
+	// =========================================================================
+	// TASK_0025 § 11.6: context-event system-prompt patches follow layer 3 precedence:
+	// 1. systemPrompt (replace) wins if present
+	// 2. appendSystemPrompt (append) is used if systemPrompt is absent
+	// 3. base value is returned unchanged if neither is present
+
+	describe("applyContextSystemPromptPatch helper", () => {
+		it("test 16: systemPrompt replaces base regardless of base value", () => {
+			// Empty base
+			expect(applyContextSystemPromptPatch("", { systemPrompt: "X" })).toBe("X")
+			// Non-empty base
+			expect(applyContextSystemPromptPatch("BASE", { systemPrompt: "X" })).toBe("X")
+		})
+
+		it("test 17: appendSystemPrompt on empty base returns value directly", () => {
+			expect(applyContextSystemPromptPatch("", { appendSystemPrompt: "X" })).toBe("X")
+		})
+
+		it("test 18: appendSystemPrompt on non-empty base appends with blank-line separator", () => {
+			expect(applyContextSystemPromptPatch("BASE", { appendSystemPrompt: "X" })).toBe("BASE\n\nX")
+		})
+
+		it("test 19: empty patch returns base unchanged", () => {
+			expect(applyContextSystemPromptPatch("BASE", {})).toBe("BASE")
+		})
+
+		it("test 20: systemPrompt wins when both systemPrompt and appendSystemPrompt are present", () => {
+			expect(
+				applyContextSystemPromptPatch("BASE", {
+					systemPrompt: "S",
+					appendSystemPrompt: "A",
+				}),
+			).toBe("S")
+		})
+	})
+
+	// =========================================================================
+	// Test 21: context handler returning { appendSystemPrompt } on conversation
+	// with NO initial systemPrompt
+	// =========================================================================
+	it("context handler with appendSystemPrompt on conversation without initial systemPrompt", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+			// Deliberately NOT setting systemPrompt
+		})) as BHAIConversationImpl
+
+		// Register a context handler that appends
+		conversation.on("context", () => {
+			return { appendSystemPrompt: "EXTRA CONTEXT" }
+		})
+
+		await sendMessage(conversation, "Test message")
+
+		// Inspect the driver call to verify the systemPrompt
+		const chatCalls = mockDriver.chat.mock.calls
+		expect(chatCalls).toHaveLength(1)
+		const chatRequest = chatCalls[0][0] as ChatRequest
+		expect(chatRequest.systemPrompt).toBe("EXTRA CONTEXT")
+	})
+
+	// =========================================================================
+	// Test 22: context handler returning { appendSystemPrompt } on conversation
+	// WITH base systemPrompt
+	// =========================================================================
+	it("context handler with appendSystemPrompt on conversation with base systemPrompt", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+			systemPrompt: "BASE PROMPT",
+		})) as BHAIConversationImpl
+
+		// Register a context handler that appends
+		conversation.on("context", () => {
+			return { appendSystemPrompt: "EXTRA CONTEXT" }
+		})
+
+		await sendMessage(conversation, "Test message")
+
+		// Inspect the driver call to verify the concatenation
+		const chatCalls = mockDriver.chat.mock.calls
+		expect(chatCalls).toHaveLength(1)
+		const chatRequest = chatCalls[0][0] as ChatRequest
+		expect(chatRequest.systemPrompt).toBe("BASE PROMPT\n\nEXTRA CONTEXT")
+	})
+
+	// =========================================================================
+	// Test 23: context handler returning { systemPrompt } (replace) still works
+	// =========================================================================
+	it("context handler with systemPrompt (replace) still works correctly", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+			systemPrompt: "ORIGINAL",
+		})) as BHAIConversationImpl
+
+		// Register a context handler that replaces
+		conversation.on("context", () => {
+			return { systemPrompt: "REPLACED" }
+		})
+
+		await sendMessage(conversation, "Test message")
+
+		// Verify the driver receives the replaced prompt
+		const chatCalls = mockDriver.chat.mock.calls
+		expect(chatCalls).toHaveLength(1)
+		const chatRequest = chatCalls[0][0] as ChatRequest
+		expect(chatRequest.systemPrompt).toBe("REPLACED")
+	})
+
+	// =========================================================================
+	// Test 24: no context handler → driver receives unmodified base prompt
+	// =========================================================================
+	it("no context handler → driver receives unmodified systemPrompt", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+			systemPrompt: "BASE PROMPT",
+		})) as BHAIConversationImpl
+
+		// Do NOT register any context handler
+
+		await sendMessage(conversation, "Test message")
+
+		// Verify the driver receives the base prompt unchanged
+		const chatCalls = mockDriver.chat.mock.calls
+		expect(chatCalls).toHaveLength(1)
+		const chatRequest = chatCalls[0][0] as ChatRequest
+		expect(chatRequest.systemPrompt).toBe("BASE PROMPT")
+	})
+
+	// =========================================================================
+	// Test 25: context event payload includes live conversation reference (identity check)
+	// =========================================================================
+	it("context event payload includes live conversation reference (identity check)", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+		})) as BHAIConversationImpl
+
+		let receivedConversation: BHAIConversationImpl | undefined
+
+		conversation.on("context", (payload: unknown) => {
+			const p = payload as { conversation: BHAIConversationImpl }
+			receivedConversation = p.conversation
+		})
+
+		await sendMessage(conversation, "Test")
+
+		// Verify the context payload includes the conversation reference
+		expect(receivedConversation).toBeDefined()
+
+		// Verify it's the SAME instance (identity check)
+		expect(receivedConversation).toBe(conversation)
+	})
+
+	// =========================================================================
+	// Test 26: context handler can read conversation.meta through payload reference
+	// =========================================================================
+	it("context handler can read and interact with conversation.meta through payload.conversation", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+		})) as BHAIConversationImpl
+
+		// Set some metadata on the conversation
+		conversation.setMeta({ tasks: ["task1", "task2"], count: 42 })
+
+		let metaTasks: unknown
+		let metaCount: unknown
+
+		conversation.on("context", (payload: unknown) => {
+			const p = payload as { conversation: BHAIConversationImpl }
+			// Read meta fields through the payload reference
+			metaTasks = (p.conversation.meta.tasks as unknown[]) ?? undefined
+			metaCount = p.conversation.meta.count
+		})
+
+		await sendMessage(conversation, "Test")
+
+		// Verify we could read the meta fields
+		expect(metaTasks).toEqual(["task1", "task2"])
+		expect(metaCount).toBe(42)
+	})
+
+	// =========================================================================
+	// Test 27: turn(start) event payload includes live conversation reference
+	// =========================================================================
+	it("turn(start) event payload includes live conversation reference (identity check)", async () => {
+		const conversation = (await bh.createConversation({
+			model: "mock-driver-id/mock-model",
+		})) as BHAIConversationImpl
+
+		let receivedConversationOnStart: BHAIConversationImpl | undefined
+
+		conversation.on("turn", (payload: unknown) => {
+			const p = payload as { state: string; conversation?: BHAIConversationImpl }
+			if (p.state === "start") {
+				receivedConversationOnStart = p.conversation
+			}
+		})
+
+		await sendMessage(conversation, "Test")
+
+		// Verify the turn(start) payload includes the conversation reference
+		expect(receivedConversationOnStart).toBeDefined()
+
+		// Verify it's the SAME instance (identity check)
+		expect(receivedConversationOnStart).toBe(conversation)
 	})
 })
