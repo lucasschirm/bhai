@@ -5,7 +5,7 @@ export default defineConfig({
 		// Kernel-level tests need no DOM. Driver/plugin tests that require browser
 		// globals are that driver's task's concern and override `environment` locally.
 		environment: "node",
-		// Tests are colocated with source under src/ and examples/ as *.test.ts.
-		include: ["src/**/*.test.ts", "examples/**/*.test.ts"],
+		// Tests are colocated with source under src/, examples/, and example/ as *.test.ts.
+		include: ["src/**/*.test.ts", "examples/**/*.test.ts", "example/**/*.test.ts"],
 	},
 })

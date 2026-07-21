@@ -48,6 +48,7 @@
 		"format": "biome format --write .",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"preview": "pnpm run build && pnpm --filter bhai-example run preview",
 		"prepare": "husky"
 	},
 	"devDependencies": {

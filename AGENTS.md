@@ -95,6 +95,9 @@ rationale).
 - `src/core/bhai.ts` — the `BHAI` kernel class. See `docs/core/kernel.md`.
 - `docs/` — implementation documentation. See `docs/ARCHITECTURE.md` for the
   index of per-subsystem docs.
+- `example/` — WebLLM chat browser example (distinct from `examples/`). A
+  vanilla-JS browser app demonstrating streaming, live telemetry, and reasoning
+  block parsing. See `example/AGENTS.md` and `docs/examples/webllm-chat.md`.
 - `tsup.config.ts` — multi-entry ESM build; entry list mirrors `package.json`
   `exports` 1:1.
 

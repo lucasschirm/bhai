@@ -230,6 +230,21 @@ export class WebLLM implements BHAIDriver {
 	}
 
 	/**
+	 * Normalize an incoming model reference to the bare MLC `model_id` the
+	 * engine and app-config entries use. Accepts both the qualified
+	 * `"webllm/<model_id>"` form (as passed by the agent loop, which always
+	 * qualifies `ChatRequest.model` and the `capabilities()` argument with the
+	 * driver id) and the bare `<model_id>` form (as used directly in this
+	 * plugin's own unit tests and by any caller that already has the bare id).
+	 * Strips exactly one leading `"webllm/"` prefix (this driver's own id +
+	 * separator) if present; otherwise returns the input unchanged.
+	 */
+	private normalizeModelId(model: string): string {
+		const prefix = `${this.id}/`
+		return model.startsWith(prefix) ? model.slice(prefix.length) : model
+	}
+
+	/**
 	 * Per-model capability flags. `toolCalls` is derived from the app-config
 	 * entry's `overrides.toolCalls` field (MLC's app config does not carry a
 	 * first-class "supports tool calling" flag today), defaulting to `false`
@@ -239,9 +254,14 @@ export class WebLLM implements BHAIDriver {
 	 * bundled WebLLM model in scope is documented as a reasoning model).
 	 * `embeddings` is `false` — this driver does not implement `embed()`.
 	 * `contextWindow` is read from `overrides.context_window_size` if present.
+	 *
+	 * `model` accepts both the bare `model_id` (used directly in unit tests and
+	 * by callers with unqualified ids) and the qualified `"webllm/<model_id>"`
+	 * form (as passed by the agent loop); both resolve to the same model.
 	 */
 	capabilities(model: string): DriverCapabilities {
-		const entry = this.findModelEntry(model)
+		const normalized = this.normalizeModelId(model)
+		const entry = this.findModelEntry(normalized)
 		const overrides = entry?.overrides ?? {}
 		return {
 			streaming: true,
@@ -404,19 +424,31 @@ export class WebLLM implements BHAIDriver {
 	 * one. Pre-warmed-instance form: assumes the host already loaded the right
 	 * model, but reloads only if `request.model` differs from what was last
 	 * loaded through this driver instance.
+	 *
+	 * `modelId` accepts both the bare `model_id` (used directly in unit tests and
+	 * by callers with unqualified ids) and the qualified `"webllm/<model_id>"`
+	 * form (as passed by the agent loop); both resolve to the same model. Tracking
+	 * (`loadedModelId`) uses the normalized form, so repeated calls with either
+	 * qualified or bare form for the same underlying model are recognized as
+	 * "already loaded" and do not re-trigger `reload`.
 	 */
 	private async ensureModelLoaded(modelId: string): Promise<void> {
-		if (this.loadedModelId === modelId) return
+		const normalized = this.normalizeModelId(modelId)
+		if (this.loadedModelId === normalized) return
 		if (this.engine.reload) {
-			await this.engine.reload(modelId)
+			await this.engine.reload(normalized)
 		}
-		this.loadedModelId = modelId
+		this.loadedModelId = normalized
 	}
 
-	/** Look up an app-config entry by model id. */
+	/**
+	 * Look up an app-config entry by model id. Accepts both the bare `model_id`
+	 * and the qualified `"webllm/<model_id>"` form; both resolve to the same entry.
+	 */
 	private findModelEntry(modelId: string): AppConfig["model_list"][number] | undefined {
+		const normalized = this.normalizeModelId(modelId)
 		const config = this.appConfig ?? this.engine.getAppConfig?.()
 		if (!config) return undefined
-		return config.model_list.find((e) => e.model_id === modelId)
+		return config.model_list.find((e) => e.model_id === normalized)
 	}
 }

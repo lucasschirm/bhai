@@ -476,3 +476,65 @@ describe("WebLLM — driver.progress events", () => {
 		])
 	})
 })
+
+describe("WebLLM — model ref normalization", () => {
+	it("calls engine.reload with bare model_id when given qualified ref", async () => {
+		const engine = fakeEngine()
+		const driver = new WebLLM({ engine })
+		await drain(driver.chat(makeRequest({ model: "webllm/test-model" })))
+		expect(engine.reload).toHaveBeenCalledWith("test-model")
+		expect(engine.reload).not.toHaveBeenCalledWith("webllm/test-model")
+	})
+
+	it("capabilities() returns same result for bare and qualified refs", () => {
+		const engine = fakeEngine({
+			appConfig: {
+				model_list: [
+					{
+						model_id: "test-model",
+						model: "Test Model",
+						model_lib: "test-lib",
+						overrides: { toolCalls: true, context_window_size: 4096 },
+					},
+				],
+			},
+		})
+		const driver = new WebLLM({ engine })
+		const capsBare = driver.capabilities("test-model")
+		const capsQualified = driver.capabilities("webllm/test-model")
+		expect(capsBare).toEqual(capsQualified)
+		expect(capsBare.toolCalls).toBe(true)
+		expect(capsBare.contextWindow).toBe(4096)
+	})
+
+	it("does not double-reload when called with different ref forms for same model", async () => {
+		const engine = fakeEngine()
+		const driver = new WebLLM({ engine })
+		// First call with bare model id
+		await drain(driver.chat(makeRequest({ model: "test-model" })))
+		expect(engine.reload).toHaveBeenCalledTimes(1)
+		// Second call with qualified model ref for the same model
+		await drain(driver.chat(makeRequest({ model: "webllm/test-model" })))
+		// Should not reload again since it's the same model (normalized)
+		expect(engine.reload).toHaveBeenCalledTimes(1)
+	})
+
+	it("still calls reload twice when switching models with mixed ref forms", async () => {
+		const engine = fakeEngine({
+			appConfig: {
+				model_list: [
+					{ model_id: "model-a", model: "A", model_lib: "la" },
+					{ model_id: "model-b", model: "B", model_lib: "lb" },
+				],
+			},
+		})
+		const driver = new WebLLM({ engine })
+		// First with qualified ref
+		await drain(driver.chat(makeRequest({ model: "webllm/model-a" })))
+		expect(engine.reload).toHaveBeenNthCalledWith(1, "model-a")
+		// Then with bare id for different model
+		await drain(driver.chat(makeRequest({ model: "model-b" })))
+		expect(engine.reload).toHaveBeenNthCalledWith(2, "model-b")
+		expect(engine.reload).toHaveBeenCalledTimes(2)
+	})
+})

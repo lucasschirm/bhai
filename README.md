@@ -157,6 +157,19 @@ pnpm lint             # biome check .
 pnpm build            # tsup build
 ```
 
+## Running the example
+
+The `example/` directory contains a browser chat app that runs WebLLM models locally in your browser with live telemetry.
+
+**Requires**: A WebGPU-capable browser (Chrome/Edge 113+).
+
+```bash
+pnpm install
+pnpm run preview      # Builds @lucasschirm/bhai, then starts the example server
+```
+
+Open `http://localhost:5173` and pick a model. See [`docs/examples/webllm-chat.md`](./docs/examples/webllm-chat.md) for full details.
+
 ## Documentation
 
 - **`../ARCHITECTURE.md`** (parent directory) — Full v0.1 design proposal with detailed rationale for every subsystem (§ 1–14).

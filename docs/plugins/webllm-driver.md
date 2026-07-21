@@ -49,6 +49,17 @@ driver calls `engine.reload(modelId)` when the requested model differs from
 the currently-loaded one. Constructing a `WebLLM` driver never blocks or
 downloads anything by itself.
 
+Model references accept **both forms**:
+- Bare `model_id` (e.g., `"test-model"`) — used directly in unit tests and
+  by callers with unqualified ids.
+- Qualified `"webllm/<model_id>"` form (e.g., `"webllm/test-model"`) — as passed
+  by the agent loop, which always qualifies `ChatRequest.model` with the driver id.
+
+Both forms resolve to the same model. Normalization is transparent; the driver
+tracks `loadedModelId` using the normalized (bare) form internally, so repeated
+calls with either form for the same underlying model are recognized as "already
+loaded" and do not re-trigger `reload`.
+
 ## `listModels()`
 
 Reflects the engine's prebuilt app config (or the host-supplied `appConfig`
@@ -66,6 +77,10 @@ Per-model capability flags derived from the app-config entry's `overrides`:
   reasoning model)
 - `embeddings`: always `false` (this driver does not implement `embed()`)
 - `contextWindow`: from `overrides.context_window_size` if present
+
+The `model` argument accepts both the bare `model_id` and the qualified
+`"webllm/<model_id>"` form (as passed by the agent loop); both resolve to the
+same model.
 
 ## `chat(request)`
 
