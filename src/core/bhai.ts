@@ -148,8 +148,8 @@ export interface BHAIPluginCapabilities {
 	modelSource?: () => Promise<unknown[]>
 	/** Refined to `McpServerConfig[]` once TASK_0015 lands. */
 	getMcps?: () => Promise<unknown[]>
-	/** Refined to `BHAIToolDefinition[]` once TASK_0008 lands. */
-	tools?: unknown[]
+	/** Tool definitions declared by this plugin. Registered via `bh.addTool()` during `init()`. */
+	tools?: BHAIToolDefinition[]
 	/** Refined to `Record<string, BHAICommandDefinition>` once TASK_0010 lands. */
 	commands?: Record<string, BHAICommandDefinition>
 	/** Declares host-supplied plugin configuration (§ 7.4); validated by TASK_0006. */
@@ -423,6 +423,9 @@ export class BHAI {
 	 * `name` is a silent no-op (its `setup`/capabilities are never
 	 * registered). Unnamed form-1 factories each get a distinct auto-name
 	 * and are never treated as duplicates.
+	 *
+	 * **Security**: Plugins run with the host's full privileges and are not sandboxed.
+	 * Hosts must gate what they `use()` — the framework provides no sandbox.
 	 */
 	use(plugin: BHAIPluginLike): this {
 		this.assertNotDisposed()
@@ -513,6 +516,19 @@ export class BHAI {
 			return
 		}
 		this.initialized = true
+
+		// TASK_0040 (issue #6): Register tools declared in capability-object form.
+		// This happens at the START of init(), before running initialize hooks,
+		// so a plugin's initialize hook can already call bh.listTools() and expect
+		// its own declared tools to be visible.
+		for (const plugin of this.plugins) {
+			const toolDefs = plugin.capabilities?.tools
+			if (toolDefs && Array.isArray(toolDefs)) {
+				for (const toolDef of toolDefs) {
+					this.addTool(toolDef)
+				}
+			}
+		}
 
 		for (const plugin of this.plugins) {
 			const hook = plugin.capabilities?.initialize

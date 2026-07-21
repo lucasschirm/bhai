@@ -202,3 +202,63 @@ describe("BHAI.init/dispose — plugins without hooks are safely skipped", () =>
 		expect(initOrder).toEqual(["with-hook"])
 	})
 })
+
+describe("BHAI.init — capability-object tools registration (issue #6)", () => {
+	it("registers tools declared in plugin.capabilities.tools via bh.addTool() at init() start", async () => {
+		const bh = new BHAI()
+		bh.use({
+			name: "tools-plugin",
+			tools: [
+				{
+					name: "tool-1",
+					description: "First tool",
+					inputSchema: { type: "object" },
+					execute: async () => "result-1",
+				},
+				{
+					name: "tool-2",
+					description: "Second tool",
+					inputSchema: { type: "object" },
+					execute: async () => "result-2",
+				},
+			],
+		})
+
+		await bh.init()
+
+		// Verify both tools are now in the registry
+		const tools = bh.listTools()
+		expect(tools).toContainEqual(expect.objectContaining({ name: "tool-1" }))
+		expect(tools).toContainEqual(expect.objectContaining({ name: "tool-2" }))
+	})
+
+	it("capability-object tools are visible to initialize hooks that run after tool registration", async () => {
+		const visibleTools: string[] = []
+		const bh = new BHAI()
+		bh.use({
+			name: "tools-plugin",
+			tools: [
+				{
+					name: "pre-registered-tool",
+					description: "A tool",
+					inputSchema: { type: "object" },
+					execute: async () => "ok",
+				},
+			],
+		})
+		bh.use({
+			name: "checker-plugin",
+			initialize: () => {
+				// This hook runs AFTER tools are registered, so it should see them
+				const tools = bh.listTools()
+				const names = tools.map((t) => t.name)
+				visibleTools.push(...names)
+			},
+		})
+
+		await bh.init()
+
+		// The checker plugin's initialize hook should have seen the pre-registered tool
+		expect(visibleTools).toContain("pre-registered-tool")
+	})
+})

@@ -9,6 +9,7 @@ import type { BHAIMessage, ConversationStatus } from "../types/message.js"
 // ConversationSnapshot is now defined and versioned in snapshot.ts (TASK_0028).
 // Import here to use in internal method signatures.
 import type { ConversationSnapshot } from "./snapshot.js"
+import { toSnapshot } from "./snapshot.js"
 
 /**
  * Conversation creation options — extensible by later tasks.
@@ -591,25 +592,7 @@ export class BHAIConversationImpl implements BHAIConversation {
 	 * the inverse operation (`fromSnapshot()`).
 	 */
 	toJSON(): ConversationSnapshot {
-		// Inline snapshot serialization to avoid circular import.
-		// The logic mirrors toSnapshot() from snapshot.ts.
-		const plainMessages = this.messages.map((msg) => ({
-			id: msg.id,
-			role: msg.role,
-			content: msg.content,
-			blocks: msg.blocks,
-			time: msg.time,
-			meta: msg.meta,
-		}))
-
-		return {
-			v: 1,
-			id: this.id,
-			messages: plainMessages,
-			model: this._getModelRef() ?? "",
-			usage: { ...this.usage },
-			meta: { ...this._meta },
-		}
+		return toSnapshot(this)
 	}
 
 	/**

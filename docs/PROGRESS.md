@@ -13,7 +13,7 @@ Source of truth for task files: `../tasks/` (parent repo).
 | Task | Title                      | Status |
 | ---- | -------------------------- | ------ |
 | 0001 | Repo scaffolding & tooling | [x]    |
-| 0044 | Open-questions triage      | [ ]    |
+| 0044 | Open-questions triage      | [x]    |
 | 0002 | Core shared types          | [x]    |
 
 ## Phase 1 — Kernel core (plugins, events, config)
@@ -79,13 +79,96 @@ Source of truth for task files: `../tasks/` (parent repo).
 
 ## Phase 6 — Interop, validation, docs
 
-| Task | Title                                       | Status |
-| ---- | ------------------------------------------- | ------ |
-| 0039 | pi extension interop adapter                | [ ]    |
-| 0040 | OpenCode plugin interop adapter             | [ ]    |
-| 0041 | Security hardening & threat-model checklist | [ ]    |
-| 0042 | PEP mapping validation                      | [ ]    |
-| 0043 | Documentation & README (v0.1 scope)         | [ ]    |
+| Task | Title                                        | Status |
+| ---- | --------------------------------------------- | ------ |
+| 0039 | pi extension interop adapter                 | [x]    |
+| 0040 | OpenCode plugin interop adapter              | [x]    |
+| 0041 | Security hardening & threat-model checklist  | [x]    |
+| 0042 | PEP mapping validation                       | [x]    |
+| 0043 | Documentation & README (v0.1 scope)          | [x]    |
+| 0044 | Open-questions triage                        | [x]    |
+
+All 44 tasks (TASK_0001–TASK_0044) are now complete. See "Recently completed
+(TASK_0039–TASK_0044, Phase 6)" below for the full writeup.
+
+## Recently completed (TASK_0039–TASK_0044, Phase 6)
+
+Interop adapters, security audit, PEP mapping validation, and final docs —
+the last phase of the v0.1 build. Summary:
+
+- **TASK_0039** — `src/plugins/interop/pi/index.ts`: `runPiExtension()`, a
+  thin shim translating pi coding-agent extensions' `ExtensionAPI` onto real
+  BHAI kernel primitives (event bus, tool/command registries, config
+  contract, conversation surface). Implements all 15 non-`idle` rows of the
+  §8.3 pi-column event-mapping table; TUI-bound calls (`ui`/`shortcuts`/
+  `themes`/`session`) are recorded, call-site-specific no-ops. 9 tests in
+  `pi-adapter.test.ts`, including a real registered-and-callable tool, a
+  real `tool(beforeCall)` block-veto (spy-verified `execute` never runs),
+  and the `sendMessage`/`sendUserMessage` loop-driving split exercised
+  through the adapter's own shim methods (not the raw conversation API).
+- **TASK_0040** — `src/plugins/interop/opencode/index.ts`:
+  `runOpenCodePlugin()`, mapping an OpenCode-style plugin's returned hooks
+  object (`tool`, `event`, `chat.message`/`chat.params`,
+  `tool.execute.before`/`after`, `permission.ask`, `config`, `auth`) onto
+  BHAI primitives, including zod-like→JSON-Schema conversion via
+  `.toJSONSchema()` and `permission.ask` composing with (never bypassing)
+  the same `tool(beforeCall)` seam every other approver uses. 7 tests in
+  `opencode-adapter.test.ts`, including both directions of native-approver
+  vs. `permission.ask` composition (spy-verified `execute` never runs in
+  either blocking direction) and a real `resolveCredentials()` call proving
+  tier-1 runtime credentials outrank the adapter's tier-2 `auth` hook.
+  **Also fixes GitHub issue #6**: `BHAI.init()` now registers
+  `plugin.capabilities.tools` via `addTool()` at the start of `init()` (2
+  new tests in `src/core/lifecycle.test.ts`).
+- **TASK_0041** — `docs/security-review.md`: audits all 5 ARCHITECTURE.md
+  §13 security bullets. 4 verified against real, passing tests; 1 gap
+  (bullet 1, "plugins are trusted / no sandbox" documentation) filed
+  against and closed by TASK_0043. Added `src/tools/no-eval.test.ts` (a
+  static regression guardrail — fails if `eval(`/`new Function`/string-arg
+  `setTimeout` ever appears in `src/**`) and one test in
+  `src/tools/availability.test.ts` proving untrusted MCP tool annotations
+  never affect the `trusted` availability flag.
+- **TASK_0042** — `docs/pep-mapping-validation.md`: validates all 12 rows
+  of ARCHITECTURE.md §14's PEP (#1338) mapping table against real tests;
+  11 verified, 1 (`Wait/continuation`, #1390) correctly marked out of scope
+  for v0.1 per the roadmap. Cross-references TASK_0041's bullet 4 for the
+  local-tool-blocking overlap rather than re-filing it.
+- **TASK_0043** — `README.md` rewritten to reflect the finished v0.1
+  framework (security callout, real shipped subpaths, 12-item v0.1
+  scope list, doc pointers); `examples/readme-quickstart.ts`/`.test.ts`
+  added (a real, runnable quickstart against a mocked Ollama HTTP layer,
+  asserting genuinely non-empty response content); TSDoc pass over the
+  public kernel API; closes the TASK_0041 bullet-1 gap (security callout
+  in the README + `BHAI.use()`'s TSDoc). **Also fixes GitHub issue #5**:
+  `BHAIConversationImpl.toJSON()` now delegates to `snapshot.ts`'s
+  `toSnapshot()` instead of inlining a duplicate copy.
+- **TASK_0044** — `docs/open-questions.md`: logs the 2 already-resolved
+  ARCHITECTURE.md §16 items (decorator flavor, compaction summarizer
+  ownership) plus decisions on all 4 open items (event granularity,
+  package name, prompt-injected tool fallback — explicitly ratifying/
+  extending TASK_0017's actual (non-)implementation, OAuth auth-line
+  deferral).
+
+18 new tests added across `src/plugins/interop/pi/pi-adapter.test.ts` (9),
+`src/plugins/interop/opencode/opencode-adapter.test.ts` (7),
+`src/core/lifecycle.test.ts` (2), `src/tools/no-eval.test.ts` (3),
+`src/tools/availability.test.ts` (1), and
+`examples/readme-quickstart.test.ts` (1) — note some of these were fixed
+in place after an independent gate re-verification found several
+originally-shipped tests were not load-bearing (weak assertions that
+passed regardless of whether the underlying behavior worked); every test
+now in the suite has been confirmed to actually fail when its
+corresponding implementation is reverted (593 → 616). All four gates
+(`typecheck`/`lint`/`test`/`build`) green.
+
+GitHub issues #4, #5, #6 (filed during Phase 4/5 review) are resolved:
+#5 and #6 fixed with passing tests (see above); #4 (system-prompt
+`systemPrompt`/`appendSystemPrompt` patch-ordering across handlers) was
+investigated and left open with a detailed comment explaining why a
+correct fix requires either a new order-preserving `EventBus` primitive or
+a breaking change to the `StartEventPatch` contract — out of scope for a
+"small guardrail" fix late in the project; recommended as its own
+follow-up task.
 
 ## Recently completed (TASK_0023–TASK_0031, Phase 4)
 

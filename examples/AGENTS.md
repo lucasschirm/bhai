@@ -9,6 +9,7 @@ Example plugins proving the kernel's extension surface (ARCHITECTURE.md §§ 6�
 - `task-plugin.ts` + `task-plugin.test.ts` (6 tests) — a task-management plugin (ARCHITECTURE.md § 11.7). Demonstrates plugin authoring forms, event subscriptions, and per-conversation state. TASK_0036.
 - `memory-plugin.ts` + `memory-plugin.test.ts` (6 tests) — an agent-memory plugin (§ 11.7). Shows how to hook into conversation lifecycle and build memory features on top of kernel events. TASK_0037.
 - `rag-plugin.ts` + `rag-plugin.test.ts` (7 tests) — a single capability-object RAG plugin demonstrating both RETRIEVAL shapes from § 11.8: Shape 1, an agentic `search_knowledge` tool the model calls on demand, and Shape 2, automatic `context`-time injection (sorted by score, truncated to `topK`) on every user turn — not two plugin-authoring forms. TASK_0038.
+- `readme-quickstart.ts` + `readme-quickstart.test.ts` (1 test) — the exact code embedded in the root `README.md`'s "Quickstart" fenced block (kept byte-identical to it). Constructs a `BHAI` instance, registers the real Ollama driver plugin and one custom tool, and drives `sendMessage()` through the real agent loop against a mocked Ollama HTTP layer, asserting a genuinely non-empty assistant response. TASK_0043.
 
 ## Conventions
 

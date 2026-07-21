@@ -8,12 +8,12 @@ implementation documentation (`docs/`). The parent directory holds only the
 v0.1 design proposal (`ARCHITECTURE.md`) and the task breakdown (`tasks/`) —
 all code lives here.
 
-## Current state (TASK_0001–TASK_0038 complete)
+## Current state (TASK_0001–TASK_0044 complete — v0.1 build finished)
 
-Phases 0–5 are implemented: foundations, kernel core, tool/driver/command
+All 6 phases are implemented: foundations, kernel core, tool/driver/command
 registries + MCP client, drivers & model selection, conversations & the agent
-loop, and kernel utilities & reference examples. See `docs/PROGRESS.md` for
-the full task status.
+loop, kernel utilities & reference examples, and interop/validation/docs. See
+`docs/PROGRESS.md` for the full task status.
 
 Implemented:
 
@@ -63,10 +63,28 @@ Implemented:
   with full model-resolution reuse and capability guarding.
 - **Reference example plugins** (`examples/`) — three fitness-test plugins
   proving the kernel extension surface is complete: task-management plugin,
-  agent-memory plugin, and RAG plugin (both agentic and automatic shapes).
+  agent-memory plugin, and RAG plugin (both agentic and automatic shapes),
+  plus a runnable README quickstart example.
+- **Interop adapters** (`src/plugins/interop/`) — `runPiExtension()`
+  (`src/plugins/interop/pi/`) translates pi coding-agent extensions onto
+  BHAI kernel primitives; `runOpenCodePlugin()`
+  (`src/plugins/interop/opencode/`) maps OpenCode-style plugin hooks onto
+  the same primitives, including zod-like→JSON-Schema conversion and
+  `permission.ask` composing with the shared `tool(beforeCall)` approval
+  seam.
+- **Security audit** (`docs/security-review.md`) — verifies all 5
+  ARCHITECTURE.md § 13 security commitments against real tests; adds a
+  static no-eval regression guardrail (`src/tools/no-eval.test.ts`).
+- **PEP mapping validation** (`docs/pep-mapping-validation.md`) — confirms
+  every § 14 (#1338) mapping row against real tests.
+- **Open-questions decision log** (`docs/open-questions.md`) — resolves the
+  4 open items from § 16 plus 2 already-resolved items, logged for
+  traceability.
 
-Not yet implemented: Phase 6 (interop adapters TASK_0039/0040, security
-hardening TASK_0041, PEP mapping TASK_0042, final docs TASK_0043).
+All 44 tasks complete. See "Recently completed (TASK_0039–TASK_0044, Phase 6)"
+in `docs/PROGRESS.md` for the full Phase 6 writeup, including GitHub issue
+#5/#6 fixes and issue #4's disposition (investigated, left open with
+rationale).
 
 ## Key files
 

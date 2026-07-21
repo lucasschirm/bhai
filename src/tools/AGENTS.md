@@ -8,6 +8,9 @@ The in-process tool registry — the single source of truth for every callable t
 
 - `registry.ts` — `ToolRegistry` class + standalone `normalizeToolResult()` helper (TASK_0008). Stores `BHAIToolDefinition` records keyed by `name` in a `Map`, validates names against § 9.1's regex, implements shadowing (replace, no `tool.removed` fired), and fires `tool.registered`/`tool.removed` (§ 8.1) via the framework `EventBus`'s kernel bypass. Also satisfies the `ToolRegistrar` seam so `@Tool`-decorated methods register through it.
 - `registry.test.ts` — 26 tests covering object/sugar forms, shadowing, name validation, `normalizeToolResult`'s three branches, snapshot freshness, minimal filter subset, the `ToolRegistrar` seam, and accessors.
+- `availability.ts` — Tool availability filtering seam (TASK_0017): `resolveAvailableTools()` and `applyToolFilter()` implement the § 9.5 3-step decision function for determining which tools a given LLM call offers, plus `isToolTrusted()` for the MCP server trust flag.
+- `availability.test.ts` — 31 tests covering filter combinations (allow/deny, tags), trust flag derivation (local vs. MCP tools, trusted vs. untrusted servers), and security verification: a test proving untrusted MCP tools' annotations never drive availability decisions (TASK_0041, § 13).
+- `no-eval.test.ts` — Security regression test (TASK_0041): static checks confirming `eval()`, `new Function()`, and dynamic callbacks never appear in non-test source code, enforcing § 13's "kernel never evals model output" commitment.
 
 ## Conventions
 
