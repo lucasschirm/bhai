@@ -1,5 +1,28 @@
 /** @file Streaming text parser for reasoning model output with <think> tags. */
 
+const OPEN_TAG = "<think>"
+const CLOSE_TAG = "</think>"
+
+/**
+ * Length of the longest proper prefix of `tag` that is also a suffix of `buf`.
+ *
+ * Used to hold back the tail of the buffer that might be the beginning of a tag
+ * split across chunk boundaries (e.g. a buffer ending in `"</thi"`). Only proper
+ * prefixes are considered — a full occurrence is handled by `indexOf` before this
+ * is ever called.
+ *
+ * @param {string} buf - The current buffer.
+ * @param {string} tag - The tag to look for a partial trailing match of.
+ * @returns {number} The number of trailing characters to hold back (0 if none).
+ */
+function partialTagSuffixLen(buf, tag) {
+	const max = Math.min(tag.length - 1, buf.length)
+	for (let i = max; i >= 1; i--) {
+		if (buf.endsWith(tag.slice(0, i))) return i
+	}
+	return 0
+}
+
 /**
  * Creates a splitter that routes streaming text into thought and answer buckets.
  *
@@ -35,96 +58,50 @@ export function createThinkSplitter() {
 
 			buffer += chunk
 
-			let pos = 0
-
-			while (pos < buffer.length) {
+			// Consume from the FRONT of `buffer` each iteration so that all progress
+			// is persisted across pushes — `buffer` is the single source of truth.
+			// (A prior version tracked a local `pos` that reset every push, so a tag
+			// landing exactly on a chunk boundary, e.g. a lone "<think>"/"</think>"
+			// chunk, was re-scanned and leaked into the output.)
+			while (buffer.length > 0) {
 				if (insideThink) {
-					// Look for closing tag
-					const closeIndex = buffer.indexOf("</think>", pos)
-
+					const closeIndex = buffer.indexOf(CLOSE_TAG)
 					if (closeIndex !== -1) {
-						// Found closing tag
-						const textBefore = buffer.substring(pos, closeIndex)
-						thoughtDelta += textBefore
-						cumulativeThought += textBefore
-						pos = closeIndex + 8 // Skip past </think>
+						// Closing tag fully present: emit text before it, drop the tag.
+						const text = buffer.slice(0, closeIndex)
+						thoughtDelta += text
+						cumulativeThought += text
+						buffer = buffer.slice(closeIndex + CLOSE_TAG.length)
 						insideThink = false
-					} else {
-						// No closing tag yet; check if tail might be start of closing tag
-						const tail = buffer.substring(pos)
-						const closePrefix = "</think>"
-
-						// Check if tail ends with a prefix of the closing tag
-						let isPotentialStart = false
-						let potentialPrefixLen = 0
-						for (let i = 1; i <= Math.min(closePrefix.length, tail.length); i++) {
-							if (tail.endsWith(closePrefix.substring(0, i))) {
-								isPotentialStart = true
-								potentialPrefixLen = i
-							}
-						}
-
-						if (isPotentialStart && potentialPrefixLen < closePrefix.length) {
-							// Hold back the tail suffix that might be the start of the tag
-							const safeLen = tail.length - potentialPrefixLen
-							const safeText = tail.substring(0, safeLen)
-							if (safeText.length > 0) {
-								thoughtDelta += safeText
-								cumulativeThought += safeText
-							}
-							buffer = tail.substring(safeLen)
-							break
-						}
-						// Tail is definitely not a prefix; emit it
-						thoughtDelta += tail
-						cumulativeThought += tail
-						buffer = ""
-						pos = buffer.length
+						continue
 					}
-				} else {
-					// Look for opening tag
-					const openIndex = buffer.indexOf("<think>", pos)
-
-					if (openIndex !== -1) {
-						// Found opening tag
-						const textBefore = buffer.substring(pos, openIndex)
-						answerDelta += textBefore
-						cumulativeAnswer += textBefore
-						pos = openIndex + 7 // Skip past <think>
-						insideThink = true
-					} else {
-						// No opening tag; check if tail might be start of opening tag
-						const tail = buffer.substring(pos)
-						const openPrefix = "<think>"
-
-						// Check if tail ends with a prefix of the opening tag
-						let isPotentialStart = false
-						let potentialPrefixLen = 0
-						for (let i = 1; i <= Math.min(openPrefix.length, tail.length); i++) {
-							if (tail.endsWith(openPrefix.substring(0, i))) {
-								isPotentialStart = true
-								potentialPrefixLen = i
-							}
-						}
-
-						if (isPotentialStart && potentialPrefixLen < openPrefix.length) {
-							// Hold back the tail suffix that might be the start of the tag
-							const safeLen = tail.length - potentialPrefixLen
-							const safeText = tail.substring(0, safeLen)
-							if (safeText.length > 0) {
-								answerDelta += safeText
-								cumulativeAnswer += safeText
-							}
-							buffer = tail.substring(safeLen)
-							break
-						}
-						// Tail is definitely not a prefix; emit it
-						answerDelta += tail
-						cumulativeAnswer += tail
-						buffer = ""
-						pos = buffer.length
-					}
+					// No closing tag yet: emit everything except a possible partial tag
+					// held back at the tail for the next chunk.
+					const hold = partialTagSuffixLen(buffer, CLOSE_TAG)
+					const safe = buffer.slice(0, buffer.length - hold)
+					thoughtDelta += safe
+					cumulativeThought += safe
+					buffer = buffer.slice(buffer.length - hold)
+					break
 				}
+
+				const openIndex = buffer.indexOf(OPEN_TAG)
+				if (openIndex !== -1) {
+					// Opening tag fully present: emit text before it, drop the tag.
+					const text = buffer.slice(0, openIndex)
+					answerDelta += text
+					cumulativeAnswer += text
+					buffer = buffer.slice(openIndex + OPEN_TAG.length)
+					insideThink = true
+					continue
+				}
+				// No opening tag yet: emit everything except a possible partial tag.
+				const hold = partialTagSuffixLen(buffer, OPEN_TAG)
+				const safe = buffer.slice(0, buffer.length - hold)
+				answerDelta += safe
+				cumulativeAnswer += safe
+				buffer = buffer.slice(buffer.length - hold)
+				break
 			}
 
 			return { thoughtDelta, answerDelta }

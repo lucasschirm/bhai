@@ -73,6 +73,35 @@ describe("createThinkSplitter", () => {
 		expect(s.answer).toBe("startend")
 	})
 
+	it("does not leak tags when each tag lands on its own chunk boundary", () => {
+		const s = createThinkSplitter()
+		for (const c of ["<think>", "reason", "</think>", "answer"]) s.push(c)
+
+		expect(s.thought).toBe("reason")
+		expect(s.answer).toBe("answer")
+	})
+
+	it("does not leak tags when streamed token-by-token", () => {
+		const s = createThinkSplitter()
+		for (const c of [
+			"<",
+			"think",
+			">",
+			"reasoning",
+			" here",
+			"</",
+			"think",
+			">",
+			"the ",
+			"answer",
+		]) {
+			s.push(c)
+		}
+
+		expect(s.thought).toBe("reasoning here")
+		expect(s.answer).toBe("the answer")
+	})
+
 	it("does not hang when a chunk ends on a genuine partial tag prefix (infinite loop regression guard)", () => {
 		const s = createThinkSplitter()
 		// This must return synchronously without hanging

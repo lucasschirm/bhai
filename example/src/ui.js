@@ -31,6 +31,24 @@ export function showFatalError(message) {
 }
 
 /**
+ * Show a non-fatal, per-turn error inside the conversation stream. Unlike
+ * {@link showFatalError}, this leaves the composer and telemetry intact so the
+ * user can read the message and try again.
+ * @param {string} message - error description
+ */
+export function showTurnError(message) {
+	const conversation = document.getElementById("conversation")
+	if (!conversation) return
+
+	const errorEl = document.createElement("div")
+	errorEl.className = "message error"
+	errorEl.setAttribute("role", "alert")
+	errorEl.textContent = message
+	conversation.appendChild(errorEl)
+	conversation.scrollTop = conversation.scrollHeight
+}
+
+/**
  * Populate the model selector with available models.
  * @param {string[]} modelIds - list of model IDs
  * @param {string} selectedId - model ID to pre-select

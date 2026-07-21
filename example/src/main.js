@@ -15,7 +15,7 @@ import { BHAI } from "@lucasschirm/bhai"
 import { WebLLM } from "@lucasschirm/bhai/plugins/webllm"
 import * as webllm from "@mlc-ai/web-llm"
 
-import { formatBytes, formatSeconds, formatTokens, formatTps } from "./lib/format.js"
+import { formatSeconds, formatTokens, formatTps } from "./lib/format.js"
 import { parseRuntimeStats } from "./lib/stats.js"
 import { thermalColor, thermalRatio } from "./lib/thermal.js"
 import { createThinkSplitter } from "./lib/think-stream.js"
@@ -56,6 +56,15 @@ let firstTokenTime = null
 
 /** Track whether we're currently generating (true = generating, false = idle). */
 let isGenerating = false
+
+/**
+ * Track whether the current turn was stopped by the user (via the Stop button).
+ * Set only by the Stop handler so the catch block can distinguish a deliberate
+ * stop from a real failure — instead of the fragile, over-broad approach of
+ * matching the substring "aborted" in an error message (which silently swallows
+ * genuine engine errors).
+ */
+let userAborted = false
 
 /**
  * Initialize the example app: set up engine, BHAI kernel, driver, and event handlers.
@@ -114,9 +123,67 @@ async function initialize() {
 
 		// Wire up UI interactions.
 		setupEventHandlers(modelsToShow)
+
+		// Create the conversation for the preselected default model so the very
+		// first message works without requiring the user to change the selection.
+		// The `<select>` shows `defaultModelId` on load, but a programmatic default
+		// never fires a `change` event — so we bootstrap that conversation here.
+		await selectModel(defaultModelId)
 	} catch (error) {
 		console.error("Initialization failed:", error)
 		ui.showFatalError("Failed to initialize — check the console for details.")
+	}
+}
+
+/**
+ * Create (or replace) the active conversation for the given model id and wire
+ * its streaming events. Called both for the preselected default model on load
+ * and whenever the user picks a different model. This does NOT download weights
+ * — the driver loads the model lazily on the first `sendMessage`.
+ * @param {string} selectedId - the bare MLC model id (without the `webllm/` prefix)
+ */
+async function selectModel(selectedId) {
+	if (!selectedId || !bh) return
+
+	try {
+		ui.setComposerState("idle")
+		isGenerating = false
+		modelLoaded = false
+		ui.setStatus("cold", "cold")
+		ui.hideColdStartPanel()
+
+		// Create a new conversation with the selected model.
+		conversation = await bh.createConversation({
+			model: `webllm/${selectedId}`,
+		})
+
+		// Wire conversation events.
+		wireConversationEvents()
+	} catch (error) {
+		console.error("Failed to create conversation:", error)
+		ui.showFatalError("Failed to load model — try again.")
+	}
+}
+
+/**
+ * Reload the active conversation from its own snapshot, yielding a fresh, idle
+ * conversation instance that preserves the full message history.
+ *
+ * A conversation owns a single-use `AbortController`: once `abort()` is called
+ * (e.g. via the Stop button), its status is stuck at `"aborted"` and its abort
+ * signal stays permanently tripped, so every later `sendMessage` silently
+ * yields nothing. `loadConversation()` builds a NEW instance with a fresh
+ * controller and `idle` status, so reloading from a snapshot un-poisons the
+ * conversation while keeping the history intact.
+ */
+async function refreshConversation() {
+	if (!conversation || !bh) return
+	try {
+		const snapshot = conversation.toJSON()
+		conversation = await bh.loadConversation(snapshot)
+		wireConversationEvents()
+	} catch (error) {
+		console.error("Failed to refresh conversation:", error)
 	}
 }
 
@@ -131,43 +198,23 @@ function setupEventHandlers(availableModels) {
 
 	// Model selector: create or switch conversation on selection.
 	modelSelect.addEventListener("change", async (e) => {
-		const selectedId = e.target.value
-		if (!selectedId) return
-
-		try {
-			ui.setComposerState("idle")
-			isGenerating = false
-			modelLoaded = false
-			ui.setStatus("cold", "cold")
-			ui.hideColdStartPanel()
-
-			// Create a new conversation with the selected model.
-			conversation = await bh.createConversation({
-				model: `webllm/${selectedId}`,
-			})
-
-			// Wire conversation events.
-			wireConversationEvents()
-		} catch (error) {
-			console.error("Failed to create conversation:", error)
-			ui.showFatalError("Failed to load model — try again.")
-		}
+		await selectModel(e.target.value)
 	})
 
 	// Composer: send on button click or Enter (no Shift).
 	composerSend.addEventListener("click", async () => {
 		if (composerSend.dataset.state === "stop") {
-			// Stop button: abort the in-flight request.
+			// Stop button: flag the deliberate stop and abort the in-flight request.
+			// The in-flight sendMessage() then settles and its `finally` resets the
+			// UI and refreshes the (now-aborted) conversation so it stays usable.
+			userAborted = true
 			if (conversation) {
 				try {
-					await conversation.abort("user stopped")
+					conversation.abort("user stopped")
 				} catch (error) {
 					console.error("Abort failed:", error)
 				}
 			}
-			isGenerating = false
-			ui.setComposerState("idle")
-			composerSend.dataset.state = "send"
 			return
 		}
 
@@ -249,16 +296,26 @@ let currentThinkSplitter = null
 async function sendMessage(text) {
 	if (!conversation) return
 
+	// Recover if a previous turn left the conversation non-idle (e.g. it was
+	// aborted, which permanently trips its abort controller). Without this, every
+	// later send would silently produce nothing.
+	if (conversation.status !== "idle") {
+		await refreshConversation()
+	}
+
 	isGenerating = true
+	userAborted = false
 	ui.setComposerState("generating")
 	ui.clearEmptyState()
 
-	// Clear the composer input and disable it during generation.
+	// Clear and disable the text input during generation. The send button stays
+	// ENABLED (as "Stop") so the user can actually cancel — disabling it made the
+	// Stop control unclickable.
 	const composerInput = document.getElementById("composer-input")
 	const composerSend = document.getElementById("composer-send")
 	composerInput.value = ""
 	composerInput.disabled = true
-	composerSend.disabled = true
+	composerSend.disabled = false
 	composerSend.dataset.state = "stop"
 
 	// Append user message to the DOM.
@@ -333,23 +390,29 @@ async function sendMessage(text) {
 			console.warn("Failed to extract runtime stats:", statsError)
 		}
 	} catch (error) {
-		if (error.message?.includes("aborted") || error.name === "AbortError") {
-			// User stopped the generation; this is expected.
-			console.log("Generation aborted by user.")
+		if (userAborted) {
+			// Deliberate stop — not a failure.
+			console.log("Generation stopped by user.")
 		} else {
+			// Surface the real error instead of swallowing it. A non-fatal inline
+			// message keeps the composer usable so the user can retry.
 			console.error("Message send failed:", error)
-			ui.showFatalError("Failed to generate response — try again.")
+			ui.showTurnError(`Failed to generate a response: ${error?.message ?? error}`)
 		}
 	} finally {
 		// Reset UI state after the turn completes (or fails).
 		isGenerating = false
 		composerInput.disabled = false
 		composerSend.disabled = false
-		composerSend.dataset.state = "send"
 		ui.setComposerState("idle")
 
-		// If we're not generating and model is loaded, status should be "ready".
-		if (!isGenerating && modelLoaded) {
+		// A stopped or otherwise non-idle conversation is poisoned (single-use
+		// abort controller); reload it from its snapshot so the next send works.
+		if (userAborted || conversation.status !== "idle") {
+			await refreshConversation()
+		}
+
+		if (modelLoaded) {
 			ui.setStatus("ready", "ready")
 		}
 	}

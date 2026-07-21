@@ -263,6 +263,14 @@ body {
 	background: var(--graphite-700);
 }
 
+.message.error {
+	background: color-mix(in srgb, var(--warm) 12%, var(--graphite-700));
+	border-left: 2px solid var(--warm);
+	color: var(--warm);
+	font-family: var(--font-mono, monospace);
+	font-size: 0.85rem;
+}
+
 .message-thought {
 	display: flex;
 	flex-direction: column;
