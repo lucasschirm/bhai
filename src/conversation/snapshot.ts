@@ -1,11 +1,13 @@
 /** @file Conversation serialization contract (TASK_0028) — snapshot shape, round-trip serialization, and version policy */
 
 import type { BHAI } from "../core/bhai.js"
+import type { MessageFieldRegistry } from "../core/message-fields.js"
 import type { ContentBlock } from "../types/content.js"
 import type { GenerationParams } from "../types/driver.js"
 import type { BHAIMessage } from "../types/message.js"
 import type { BHAIConversationImpl } from "./conversation.js"
 import type { CreateConversationOptions } from "./conversation.js"
+import { createMessage } from "./message.js"
 
 /**
  * Plain-JSON representation of a {@link BHAIMessage}, excluding methods.
@@ -261,8 +263,9 @@ export async function fromSnapshot(
 	// These methods throw if called on a reloaded message, consistent with
 	// § 11.1's "legal only while state === 'before'" rule.
 	const plainMessages = messages as PlainMessage[]
+	const messageFields = bh._getMessageFields()
 	const restoredMessages: BHAIMessage[] = plainMessages.map((plain) =>
-		createMessageFromPlain(plain),
+		createMessageFromPlain(plain, messageFields),
 	)
 
 	conversation._restoreFromSnapshot({
@@ -344,23 +347,19 @@ export async function fromSnapshot(
  *
  * @internal
  */
-function createMessageFromPlain(plain: PlainMessage): BHAIMessage {
-	return {
-		id: plain.id,
-		role: plain.role,
-		content: plain.content,
-		blocks: plain.blocks,
-		time: plain.time,
-		meta: plain.meta,
-		append: () => {
-			throw new Error(
-				"BHAIMessage.append(): cannot mutate a reloaded/finalized message — mutation is legal only while state === 'before'",
-			)
+function createMessageFromPlain(plain: PlainMessage, fields?: MessageFieldRegistry): BHAIMessage {
+	// Fields are installed on reloaded messages too, so `message.think` (and any
+	// plugin field) keeps reading the value persisted inside `meta`.
+	return createMessage(
+		{
+			id: plain.id,
+			role: plain.role,
+			content: plain.content,
+			blocks: plain.blocks,
+			time: plain.time,
+			meta: plain.meta,
 		},
-		setContent: () => {
-			throw new Error(
-				"BHAIMessage.setContent(): cannot mutate a reloaded/finalized message — mutation is legal only while state === 'before'",
-			)
-		},
-	}
+		fields,
+		{ mutable: false },
+	)
 }

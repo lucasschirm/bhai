@@ -8,12 +8,14 @@
  */
 
 import type { BHAI } from "../core/bhai.js"
+import type { MessageFieldRegistry } from "../core/message-fields.js"
 import type { ContentBlock } from "../types/content.js"
 import type { EmitResult } from "../types/events.js"
 import type { BHAIMessage } from "../types/message.js"
 import type { CreateConversationOptions } from "./conversation.js"
 import type { BHAIConversationImpl } from "./conversation.js"
 import { EventBus } from "./event-bus.js"
+import { createMessage } from "./message.js"
 
 /**
  * Message initialization shape — input to `prepend` arrays in start-event patches.
@@ -179,7 +181,8 @@ export async function ensureStarted(
 
 	// Layer 3: inject prepended messages at the top of history.
 	if ("prepend" in patch && patch.prepend && patch.prepend.length > 0) {
-		const messages = patch.prepend.map((init) => initToMessage(init))
+		const fields = conversation._getBh()._getMessageFields()
+		const messages = patch.prepend.map((init) => initToMessage(init, fields))
 		conversation._prependMessages(messages)
 	}
 }
@@ -192,58 +195,19 @@ export async function ensureStarted(
  *
  * @internal
  */
-function initToMessage(init: MessageInit): BHAIMessage {
-	const id = crypto.randomUUID()
-	const time = Date.now()
-
-	// Derive blocks and content string from the content field.
-	let blocks: ContentBlock[]
-	let content: string
-
-	if (typeof init.content === "string") {
-		content = init.content
-		blocks = [{ type: "text", text: init.content }]
-	} else {
-		blocks = init.content
-		// Concatenate all text blocks to form the string content.
-		content = blocks
-			.filter((b) => b.type === "text")
-			.map((b) => (b as ContentBlock & { type: "text" }).text)
-			.join("")
-	}
-
-	// Merge metadata with the contextIncluded convention.
-	const meta = {
-		...init.meta,
-		contextIncluded: init.contextIncluded ?? true,
-	}
-
+function initToMessage(init: MessageInit, fields?: MessageFieldRegistry): BHAIMessage {
 	// Synthetic messages inserted here have simple content mutation (append/setContent).
 	// This is safe for prepended preamble messages since they are not actively streaming.
 	// TASK_0025+ will own the real state-based mutation-legality enforcement.
-	const message: BHAIMessage = {
-		id,
-		role: init.role,
-		time,
-		content,
-		blocks,
-		meta,
-		append(text: string) {
-			this.content += text
-			const lastBlock = this.blocks[this.blocks.length - 1]
-			if (lastBlock && lastBlock.type === "text") {
-				;(lastBlock as ContentBlock & { type: "text" }).text += text
-			} else {
-				this.blocks.push({ type: "text", text })
-			}
+	return createMessage(
+		{
+			role: init.role,
+			content: init.content,
+			// Merge metadata with the contextIncluded convention.
+			meta: { ...init.meta, contextIncluded: init.contextIncluded ?? true },
 		},
-		setContent(text: string) {
-			this.content = text
-			this.blocks = [{ type: "text", text }]
-		},
-	}
-
-	return message
+		fields,
+	)
 }
 
 // ============================================================================

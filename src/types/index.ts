@@ -9,6 +9,7 @@
 export type { CallToolResult, ContentBlock, JSONSchema } from "./content.js"
 export type {
 	BHAIMessage,
+	BHAIMessageExtensions,
 	ConversationStatus,
 } from "./message.js"
 export type {

@@ -9,7 +9,7 @@ A vanilla JavaScript browser example demonstrating BHAI's core capabilities: str
 1. **Streaming responses** — Text arrives incrementally as the model generates tokens.
 2. **Live decode/prefill telemetry** — Real-time measurement of tokens-per-second during prefill (KV cache population) and decode (token generation), displayed as an instrument panel.
 3. **Time-to-first-token (TTFT)** — Latency from message send to first token received.
-4. **Reasoning blocks** — `<think>...</think>` regions parsed client-side and hidden in a collapsible "Thought" panel (since WebLLM's driver only emits `kind: "text"` deltas, not structured reasoning deltas, parsing is a client-side concern).
+4. **Reasoning blocks** — `<think>...</think>` regions split out by the framework (`parseThink: true`) and shown in a collapsible "Thought" panel.
 5. **Model selection & cold-start feedback** — Download progress as weights are loaded from the cloud.
 6. **Context usage** — Visual bar showing how much of the available context window is being used.
 7. **Thermal design** — Visual metaphor where the app is cold/dim when idle, warming up as the model loads and runs (status dot, decode gauge, and download progress bar all interpolate from cold cyan → warm coral).
@@ -69,24 +69,30 @@ ui.js (DOM helpers)
 └─ All direct DOM querying & mutation
 
 Lib modules (pure functions, testable)
-├─ think-stream.js — parse <think>...</think> blocks
 ├─ stats.js — extract tok/s from engine.runtimeStatsText()
 ├─ thermal.js — map decode tok/s to colors
 └─ format.js — pretty-print numbers for display
 ```
 
-### Thought splitting (client-side reasoning parsing)
+### Thought splitting (`parseThink`)
 
-WebLLM's driver only emits `kind: "text"` deltas (no structured reasoning channel). To surface a reasoning panel, the example parses `<think>...</think>` XML tags client-side:
+WebLLM's driver only emits `kind: "text"` deltas (no structured reasoning channel), and reasoning models such as Qwen3 inline their thinking as `<think>...</think>` in the response text. The conversation is therefore created with `parseThink: true`:
 
-1. **Per-turn streaming**: A new `createThinkSplitter()` instance is created for each assistant turn.
-2. **Incremental parsing**: Each `message.delta` is fed into the splitter via `.push(delta)`, which yields `{ thoughtDelta, answerDelta }`.
-3. **DOM updates**: Thought deltas go to a collapsible `<details>` region (hidden by default); answer deltas go to the main message body.
+```js
+conversation = await bh.createConversation({
+  model: `webllm/${selectedId}`,
+  parseThink: true,
+})
+```
 
-This works because:
-- Models with reasoning (e.g., Qwen3) do emit their thinking as `<think>...</think>` in the response text.
-- The parsing is stateful and handles tags arriving mid-delta.
-- The thought region only becomes visible once any thought content is detected.
+The framework then splits the stream as it arrives — statefully, so tags may straddle chunk boundaries — and the example only has to route each channel:
+
+1. **`kind: "reasoning"`** → `ui.appendThoughtDelta()`, a collapsible `<details>` region created on the first delta.
+2. **`kind: "text"`** → `ui.appendAnswerDelta()`, the main message body, which never contains `<think>` markup.
+
+The full reasoning text is also available on the finished message as `message.think` (backed by `meta.think`, so it survives a snapshot round-trip).
+
+This example previously shipped its own `src/lib/think-stream.js` parser; that parser now lives in the framework at `src/conversation/think-stream.ts`.
 
 ### Stats & telemetry
 
@@ -195,7 +201,7 @@ On mobile (<861px), it stacks into a single column.
 
 ### "Thought" panel never appears
 
-- **Cause**: The model isn't generating `<think>...</think>` tags, or they're not formatted as expected.
+- **Cause**: The model isn't generating `<think>...</think>` tags, or the conversation was not created with `parseThink: true`.
 - **Solution**: 
   - Confirm the model supports reasoning (e.g., Qwen3 does; Phi does not).
   - Try a different prompt that encourages reasoning (e.g., "Think step by step about...").
@@ -221,7 +227,7 @@ The example imports `@lucasschirm/bhai` via the workspace (`workspace:*` depende
 
 ### Pure lib + browser wiring
 
-The `src/lib/` functions (think-splitting, stats parsing, formatting) are pure and testable in Node (no browser globals). They run via `pnpm test` with vitest. The browser wiring (`src/main.js`, `src/ui.js`) is thin glue around BHAI and the libs — it's not unit-tested, only smoke-tested by `pnpm run preview`.
+The `src/lib/` functions (stats parsing, formatting) are pure and testable in Node (no browser globals). They run via `pnpm test` with vitest. The browser wiring (`src/main.js`, `src/ui.js`) is thin glue around BHAI and the libs — it's not unit-tested, only smoke-tested by `pnpm run preview`.
 
 ### Build output
 

@@ -12,7 +12,9 @@ import type { BHAIDriver, ChatRequest, DriverEvent } from "../types/driver.js"
 import type { BHAIToolDefinition } from "../types/index.js"
 import type { BHAIMessage, ConversationStatus } from "../types/message.js"
 import type { BHAIConversationImpl } from "./conversation.js"
+import { createMessage, withMessageFields } from "./message.js"
 import { computePreContextSystemPrompt, ensureStarted } from "./system-prompt.js"
+import { createThinkSplitter } from "./think-stream.js"
 
 /**
  * Error thrown when sendMessage() is called with deliverAs: 'immediate' (default)
@@ -106,52 +108,9 @@ export function applyContextSystemPromptPatch(
 function constructMessage(
 	content: string | ContentBlock[],
 	role: "user" | "assistant" | "system" | "tool",
+	conversation: BHAIConversationImpl,
 ): BHAIMessage {
-	let blocks: ContentBlock[]
-	let contentStr: string
-
-	if (typeof content === "string") {
-		contentStr = content
-		blocks = [{ type: "text", text: content }]
-	} else {
-		blocks = content
-		// Concatenate all text blocks for the convenience string field
-		contentStr = blocks
-			.filter((b) => b.type === "text")
-			.map((b) => (b as ContentBlock & { type: "text" }).text)
-			.join("")
-	}
-
-	return {
-		id: crypto.randomUUID(),
-		role,
-		time: Date.now(),
-		content: contentStr,
-		blocks,
-		meta: {},
-		append(text: string) {
-			this.content += text
-			// Find or create the text block
-			const textBlocks = this.blocks.filter((b) => b.type === "text")
-			if (textBlocks.length > 0) {
-				;(textBlocks[textBlocks.length - 1] as ContentBlock & { type: "text" }).text += text
-			} else {
-				this.blocks.push({ type: "text", text })
-			}
-		},
-		setContent(newContent: string | ContentBlock[]) {
-			if (typeof newContent === "string") {
-				this.content = newContent
-				this.blocks = [{ type: "text", text: newContent }]
-			} else {
-				this.blocks = newContent
-				this.content = newContent
-					.filter((b) => b.type === "text")
-					.map((b) => (b as ContentBlock & { type: "text" }).text)
-					.join("")
-			}
-		},
-	}
+	return createMessage({ role, content }, conversation._getBh()._getMessageFields())
 }
 
 /**
@@ -219,7 +178,7 @@ export async function sendMessage(
 	}
 
 	// Step 1: Construct the user message.
-	const userMessage = constructMessage(content, "user")
+	const userMessage = constructMessage(content, "user", conversation)
 
 	// Step 2: Ensure the conversation has been started (fire start event, apply prepends, etc.).
 	const createOptions = conversation._getCreateOptions()
@@ -247,19 +206,29 @@ export async function sendMessage(
 	)
 
 	// If blocked, return immediately without calling the driver.
+	// `withMessageFields` rather than a bare spread: message-field accessors are
+	// non-enumerable and would not survive the copy, so the returned message
+	// would lose every plugin field.
 	if (beforeResult.blocked) {
-		return {
-			...userMessage,
-			meta: {
-				...userMessage.meta,
-				blocked: true,
-				blockedReason: beforeResult.reason,
+		return withMessageFields(
+			userMessage,
+			{
+				meta: {
+					...userMessage.meta,
+					blocked: true,
+					blockedReason: beforeResult.reason,
+				},
 			},
-		}
+			bh._getMessageFields(),
+		)
 	}
 
 	// Step 5: Apply any patches from message(before), append message, fire message(waiting).
-	const patchedMessage = { ...userMessage, ...beforeResult.patch }
+	const patchedMessage = withMessageFields(
+		userMessage,
+		beforeResult.patch as Partial<BHAIMessage>,
+		bh._getMessageFields(),
+	)
 	conversation._pushMessage(patchedMessage)
 
 	await conversation._dispatchConversationEvent("message", {
@@ -277,6 +246,7 @@ export async function sendMessage(
 	// Step 6: Bounded loop (TASK_0027) — continue until a termination condition fires.
 	const maxIterations = createOptions.maxIterations ?? 8
 	const turnTimeoutMs = createOptions.turnTimeoutMs
+	const parseThink = createOptions.parseThink ?? false
 	const retryPolicy = createOptions.retryPolicy ?? DEFAULT_RETRY_POLICY
 
 	let iteration = 0
@@ -310,7 +280,7 @@ export async function sendMessage(
 		pendingSteerResolutions = []
 		const steerEntries = conversation._drainSteerQueue()
 		for (const entry of steerEntries) {
-			const steerMessage = constructMessage(entry.content, "user")
+			const steerMessage = constructMessage(entry.content, "user", conversation)
 			const beforeResult = await conversation._dispatchConversationEvent(
 				"message",
 				{
@@ -439,8 +409,11 @@ export async function sendMessage(
 		}
 
 		// Create a new assistant message for this turn.
-		const assistantMessage = constructMessage("", "assistant")
+		const assistantMessage = constructMessage("", "assistant", conversation)
 		const toolCallBuffer: DriverEvent[] = []
+		// One splitter per assistant turn, so a `<think>` block never bleeds
+		// across turns. Only allocated when the conversation opted in.
+		const thinkSplitter = parseThink ? createThinkSplitter() : undefined
 
 		// Fire request(before) via dispatch wrapper for retry logic.
 		const requestDispatch: RequestDispatch = async (
@@ -475,13 +448,40 @@ export async function sendMessage(
 			}
 
 			if (event.type === "delta") {
-				assistantMessage.append(event.text)
-				await conversation._dispatchConversationEvent("message.delta", {
-					conversationId: conversation.id,
-					messageId: assistantMessage.id,
-					delta: event.text,
-					kind: "text" as const,
-				})
+				if (thinkSplitter) {
+					// parseThink: split this chunk into reasoning and answer text,
+					// then emit each on the channel it belongs to. Either delta may
+					// be empty (a chunk wholly inside or wholly outside the tags, or
+					// one held back mid-tag); skip the dispatch in that case so
+					// consumers never see empty deltas.
+					const { thoughtDelta, answerDelta } = thinkSplitter.push(event.text)
+					if (thoughtDelta) {
+						assistantMessage.think = (assistantMessage.think ?? "") + thoughtDelta
+						await conversation._dispatchConversationEvent("message.delta", {
+							conversationId: conversation.id,
+							messageId: assistantMessage.id,
+							delta: thoughtDelta,
+							kind: "reasoning" as const,
+						})
+					}
+					if (answerDelta) {
+						assistantMessage.append(answerDelta)
+						await conversation._dispatchConversationEvent("message.delta", {
+							conversationId: conversation.id,
+							messageId: assistantMessage.id,
+							delta: answerDelta,
+							kind: "text" as const,
+						})
+					}
+				} else {
+					assistantMessage.append(event.text)
+					await conversation._dispatchConversationEvent("message.delta", {
+						conversationId: conversation.id,
+						messageId: assistantMessage.id,
+						delta: event.text,
+						kind: "text" as const,
+					})
+				}
 			} else if (event.type === "reasoning-delta") {
 				if (!assistantMessage.meta.reasoning) {
 					assistantMessage.meta.reasoning = ""
@@ -604,7 +604,7 @@ export async function sendMessage(
 		if (continueWith) {
 			// Veto: inject a synthetic follow-up and continue looping.
 			// This iteration STILL counts toward maxIterations.
-			const syntheticMessage = constructMessage(continueWith, "user")
+			const syntheticMessage = constructMessage(continueWith, "user", conversation)
 			syntheticMessage.meta.synthetic = "turn-veto-continuation"
 			syntheticMessage.meta.contextIncluded = true
 			conversation._pushMessage(syntheticMessage)
@@ -630,7 +630,7 @@ export async function sendMessage(
 	// The abort event is already fired by conversation.abort() itself (TASK_0027).
 	if (conversation._getAbortSignal().aborted) {
 		// Return with aborted flag (or a synthetic empty message if none exists yet).
-		const resultMsg = lastAssistantMessage ?? constructMessage("", "assistant")
+		const resultMsg = lastAssistantMessage ?? constructMessage("", "assistant", conversation)
 		resultMsg.meta.aborted = true
 		return resultMsg
 	}
@@ -666,7 +666,7 @@ export async function sendMessage(
 		await conversation._dispatchConversationEvent("idle", { conversation })
 	}
 
-	return lastAssistantMessage ?? constructMessage("", "assistant")
+	return lastAssistantMessage ?? constructMessage("", "assistant", conversation)
 }
 
 /**
@@ -940,7 +940,7 @@ async function executeToolBatch(
 			const call = toolCalls[i]
 
 			// Construct tool-result message.
-			const toolResultMsg = constructMessage(result.content ?? [], "tool")
+			const toolResultMsg = constructMessage(result.content ?? [], "tool", conversation)
 			toolResultMsg.meta = {
 				toolCallId: call.toolCallId,
 				toolName: call.name,
@@ -977,7 +977,7 @@ export async function addMessage(
 	role: "user" | "assistant" | "system",
 	options?: AddOptions,
 ): Promise<BHAIMessage> {
-	const message = constructMessage(content, role)
+	const message = constructMessage(content, role, conversation)
 
 	// Merge metadata with contextIncluded convention.
 	message.meta = {

@@ -124,6 +124,39 @@ values and do not constitute a "change" to a live config.
 
 `bh.getConfig(name)` returns the merged config for a plugin.
 
+## Extending the message contract
+
+Beyond tools, commands, and events, a plugin can attach typed per-message data.
+`bh.defineMessageField(name, { metaKey?, default? })` installs a non-enumerable
+accessor on every `BHAIMessage`, backed by a key in the message's `meta` bag —
+so the value persists with the conversation snapshot for free, and never leaks
+into the snapshot's wire shape as a stray top-level key.
+
+```ts
+// Declare the type (merges through the package barrel).
+declare module "@lucasschirm/bhai" {
+  interface BHAIMessageExtensions {
+    sentiment?: "positive" | "negative"
+  }
+}
+
+export const sentimentPlugin: BHAIPluginCapabilities = {
+  name: "sentiment",
+  initialize({ bh }) {
+    bh.defineMessageField("sentiment")
+    bh.on("conversation.message", (payload) => {
+      const { message, state } = payload as { message: BHAIMessage; state: string }
+      if (state === "sent") message.sentiment = classify(message.content)
+    })
+  },
+}
+```
+
+Field names are exclusive: registering one twice, or shadowing a structural
+member of `BHAIMessage`, throws. Namespace the storage with `metaKey` (e.g.
+`{ metaKey: "acme:sentiment" }`) when several plugins might want the same
+public name.
+
 ## Environment boundary
 
 All files in this subsystem use only web-standard APIs. `ajv` is the only

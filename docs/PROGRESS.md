@@ -91,6 +91,42 @@ Source of truth for task files: `../tasks/` (parent repo).
 All 44 tasks (TASK_0001–TASK_0044) are now complete. See "Recently completed
 (TASK_0039–TASK_0044, Phase 6)" below for the full writeup.
 
+## Post-v0.1 work
+
+| Item                                          | Status |
+| --------------------------------------------- | ------ |
+| Open message-field contract + `parseThink`    | [x]    |
+
+## Recently completed (open message-field contract + `parseThink`)
+
+Post-v0.1. Gives plugins a first-class way to attach typed per-message data, and
+moves `<think>` parsing out of the WebLLM example and into the framework.
+
+- **`src/core/message-fields.ts`** (new) — `MessageFieldRegistry` +
+  `applyMessageFields()`. `bh.defineMessageField(name, { metaKey?, default? })`
+  installs a non-enumerable accessor over one key of `message.meta`, so a
+  plugin field persists through the existing snapshot channel without
+  appearing as a stray key in the wire shape.
+- **`src/types/message.ts`** — new `BHAIMessageExtensions`, the module-
+  augmentation target; `BHAIMessage` extends it. Ships one member, `think`.
+- **`src/conversation/message.ts`** (new) — `createMessage()`, now the single
+  factory behind all four former construction sites (agent loop, system-prompt
+  `prepend`, compaction summary, snapshot restore), plus `withMessageFields()`
+  for the copy-with-patch path. Fixed two pre-existing divergences between the
+  old factories (`append` block targeting, `setContent` signature).
+- **`src/conversation/think-stream.ts`** (new) — `createThinkSplitter()`, moved
+  from `example/src/lib/think-stream.js` and ported to TypeScript.
+- **`CreateConversationOptions.parseThink`** (default `false`) — the agent loop
+  splits `<think>` out of the driver's text stream, routing tag content to
+  `message.think` / `kind: 'reasoning'` and the rest to the body /
+  `kind: 'text'`. A driver's native `reasoning-delta` channel is unaffected.
+- **`example/`** — deleted its own parser and now passes `parseThink: true`,
+  switching on `kind` in the `message.delta` handler.
+
+Gates: `pnpm lint`, `pnpm typecheck`, `pnpm test` (730 tests, 50 files), and
+`pnpm build` all pass. Note `pnpm typecheck` requires `dist/` to exist, because
+`examples/readme-quickstart.ts` imports the package by its public specifier.
+
 ## Recently completed (TASK_0039–TASK_0044, Phase 6)
 
 Interop adapters, security audit, PEP mapping validation, and final docs —
