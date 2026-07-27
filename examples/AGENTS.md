@@ -14,6 +14,7 @@ Example plugins proving the kernel's extension surface (ARCHITECTURE.md §§ 6�
 ## Conventions
 
 - **Kernel API only**: every example uses ONLY public kernel exports (`BHAI`, `Conversation`, plugin decorators, event types, etc.) from `@lucasschirm/bhai` or `@lucasschirm/bhai/core`. No imports from `src/plugins/**`, no environment-specific assumptions, no private APIs.
+- **Package-name imports resolve to `src/`, not `dist/`**: `vitest.config.ts` aliases `@lucasschirm/bhai` (and its `/core` and `/plugins/*` subpaths) to the matching `src/**/index.ts` barrels, so `pnpm test` never requires a prior `pnpm build` (CI runs tests without building). Do not rely on built output existing when authoring examples.
 - **Each example is a fitness test**: if an example cannot be written without a kernel change, that indicates the kernel's extension surface is incomplete or broken. Examples are as load-bearing as any integration test.
 - **Colocated tests**: each plugin file has a sibling `.test.ts` file in the same directory, following the repo's test conventions.
 

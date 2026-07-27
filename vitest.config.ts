@@ -1,6 +1,27 @@
+import { fileURLToPath } from "node:url"
 import { defineConfig } from "vitest/config"
 
 export default defineConfig({
+	resolve: {
+		// Examples import the package by its published name, as a consumer would.
+		// Resolve those specifiers to src/ so tests never require a prior build
+		// (CI runs `pnpm test` without `pnpm build`, so dist/ does not exist there).
+		// Order matters: more specific subpath patterns must come first.
+		alias: [
+			{
+				find: /^@lucasschirm\/bhai\/plugins\/(.*)$/,
+				replacement: fileURLToPath(new URL("./src/plugins/$1/index.ts", import.meta.url)),
+			},
+			{
+				find: /^@lucasschirm\/bhai\/core$/,
+				replacement: fileURLToPath(new URL("./src/core/index.ts", import.meta.url)),
+			},
+			{
+				find: /^@lucasschirm\/bhai$/,
+				replacement: fileURLToPath(new URL("./src/index.ts", import.meta.url)),
+			},
+		],
+	},
 	test: {
 		// Kernel-level tests need no DOM. Driver/plugin tests that require browser
 		// globals are that driver's task's concern and override `environment` locally.
