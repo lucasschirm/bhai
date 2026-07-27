@@ -14,6 +14,13 @@ export {
 	type ConfigChangedPayload,
 } from "./bhai.js"
 export { CommandRegistry } from "./commands.js"
+// Open message-field contract — plugin-declared accessors over `message.meta`.
+export {
+	applyMessageFields,
+	MessageFieldRegistry,
+	type MessageFieldDefinition,
+	type ResolvedMessageField,
+} from "./message-fields.js"
 export {
 	EventBus,
 	type BlockSignal,
@@ -59,6 +66,19 @@ export {
 	toSnapshot,
 	fromSnapshot,
 } from "../conversation/snapshot.js"
+// The canonical message factory — every BHAIMessage in the system is built here.
+export {
+	createMessage,
+	withMessageFields,
+	type CreateMessageInit,
+	type CreateMessageOptions,
+} from "../conversation/message.js"
+// Streaming `<think>` tag splitter, backing `CreateConversationOptions.parseThink`.
+export {
+	createThinkSplitter,
+	type ThinkDelta,
+	type ThinkSplitter,
+} from "../conversation/think-stream.js"
 // TASK_0024: System-prompt layering and start-event firing.
 export {
 	computePreContextSystemPrompt,

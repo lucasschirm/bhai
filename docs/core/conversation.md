@@ -86,13 +86,63 @@ parsing/resolution consumed by the loop to find a driver), `retry.ts`
 - **History is never deleted** — compaction only ever marks
   `meta.contextIncluded = false` and inserts a `role: 'system'` summary
   message; snapshots always contain the complete transcript.
+- **`meta.reasoning: string`** — a driver's *native* `reasoning-delta` channel,
+  accumulated on the assistant message and mirrored as `message.delta` with
+  `kind: 'reasoning'`.
+- **`meta.think: string`** — reasoning extracted from `<think>` tags in the
+  model's own *text* stream when the conversation was created with
+  `parseThink: true`. Exposed as `message.think` through the message-field
+  contract (see below) and dispatched on the same `kind: 'reasoning'` channel
+  as `meta.reasoning`, so consumers handle one shape either way.
+- **`meta.aborted` / `meta.synthetic` / `meta.compactionSummary`** — set by the
+  abort path, the `turn(end)` continuation path, and compaction respectively.
+
+## Message construction and the open message-field contract
+
+Every `BHAIMessage` is built by `createMessage()` in `message.ts` — the agent
+loop, `prepend` handling, compaction summaries, and snapshot restore all route
+through it, so a message is shaped identically wherever it came from. Pass
+`{ mutable: false }` for messages that are finalized by construction; their
+`append`/`setContent` throw, per § 11.1.
+
+`bh.defineMessageField(name, { metaKey?, default? })` installs a **non-enumerable
+accessor** on every message the kernel builds, reading and writing one key in
+`meta`. Plugins get `message.myField` ergonomics while the value persists through
+the `meta` channel that already round-trips; because the accessor is
+non-enumerable it never leaks into `JSON.stringify` or a snapshot's wire shape.
+
+Declare the type by module augmentation:
+
+```ts
+declare module "@lucasschirm/bhai" {
+  interface BHAIMessageExtensions {
+    sentiment?: "positive" | "negative"
+  }
+}
+
+bh.defineMessageField("sentiment")
+```
+
+One trap worth knowing when touching the loop: a bare `{ ...message }` spread
+drops the accessors. Use `withMessageFields(message, patch, fields)` instead —
+this is why a `message(before)` handler's patch does not silently strip plugin
+fields from the message that lands in history.
 
 ## Guardrails (`CreateConversationOptions`)
 
 `maxIterations` (8), `maxToolRepairs` (2), `serialTools`, `turnTimeoutMs`
 (no default), `retryPolicy`, `compaction: { auto, reserveTokens }`,
-`systemPrompt`, `model`. All optional, all documented with their defaults on
-the interface in `conversation.ts`.
+`parseThink` (`false`), `systemPrompt`, `model`. All optional, all documented
+with their defaults on the interface in `conversation.ts`.
+
+`parseThink: true` makes the loop split `<think>...</think>` out of the driver's
+text stream as it arrives (`think-stream.ts`, one splitter per assistant turn):
+tag content accumulates on `message.think` and dispatches as `kind: 'reasoning'`,
+everything else becomes the message body and dispatches as `kind: 'text'`. Tags
+split across chunk boundaries are handled, and empty deltas are never
+dispatched. It exists because some reasoning models have no native reasoning
+channel and inline their chain of thought into ordinary text; without it every
+consumer reimplements the same parser.
 
 ## Storage (no implementations in v1)
 

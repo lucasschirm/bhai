@@ -4,6 +4,7 @@ import type { EmitResult } from "../types/events.js"
 import type { BHAIMessage } from "../types/message.js"
 import { effectiveContextMessages } from "./agent-loop.js"
 import type { BHAIConversationImpl } from "./conversation.js"
+import { createMessage } from "./message.js"
 
 /**
  * Options for conversation compaction (manual or via emit).
@@ -203,20 +204,18 @@ export async function runCompactionPipeline(
 	}
 
 	// Insert the summary message at the fold point (immediately before the first retained message).
-	const summaryMessage: BHAIMessage = {
-		id: crypto.randomUUID(),
-		role: "system",
-		content: summary,
-		blocks: [{ type: "text", text: summary }],
-		time: Date.now(),
-		meta: { contextIncluded: true, compactionSummary: true },
-		append: () => {
-			throw new Error("append() is not supported on compaction summary messages")
+	const summaryMessage: BHAIMessage = createMessage(
+		{
+			role: "system",
+			content: summary,
+			meta: { contextIncluded: true, compactionSummary: true },
 		},
-		setContent: () => {
-			throw new Error("setContent() is not supported on compaction summary messages")
+		conversation._getBh()._getMessageFields(),
+		{
+			mutable: false,
+			frozenReason: "{method}() is not supported on compaction summary messages",
 		},
-	}
+	)
 
 	// Insert at keepFrom index (before any retained messages shift indices)
 	conversation._insertMessageAt(keepFrom, summaryMessage)

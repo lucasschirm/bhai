@@ -3,8 +3,7 @@
  *
  * Wires BHAI kernel + WebLLM engine + DOM together. Orchestrates the flow of
  * model loading, message sending, streaming, stats extraction, and UI updates.
- * Calls pure lib functions (`createThinkSplitter`, `parseRuntimeStats`, etc.) and
- * UI helpers from `ui.js`.
+ * Calls pure lib functions (`parseRuntimeStats`, etc.) and UI helpers from `ui.js`.
  *
  * All direct DOM querying/mutation lives in `ui.js`; this module focuses on
  * ORCHESTRATION (calling BHAI/engine APIs, calling lib functions, calling `ui.js`
@@ -18,7 +17,6 @@ import * as webllm from "@mlc-ai/web-llm"
 import { formatSeconds, formatTokens, formatTps } from "./lib/format.js"
 import { parseRuntimeStats } from "./lib/stats.js"
 import { thermalColor, thermalRatio } from "./lib/thermal.js"
-import { createThinkSplitter } from "./lib/think-stream.js"
 import * as ui from "./ui.js"
 
 /**
@@ -153,8 +151,14 @@ async function selectModel(selectedId) {
 		ui.hideColdStartPanel()
 
 		// Create a new conversation with the selected model.
+		// `parseThink: true` makes the framework split `<think>...</think>` out of
+		// the model's text stream: reasoning arrives as `message.delta` with
+		// `kind: "reasoning"` and lands on `message.think`, the answer arrives as
+		// `kind: "text"`. WebLLM has no native reasoning channel, so without this
+		// the example would have to parse the tags itself.
 		conversation = await bh.createConversation({
 			model: `webllm/${selectedId}`,
+			parseThink: true,
 		})
 
 		// Wire conversation events.
@@ -243,30 +247,21 @@ function wireConversationEvents() {
 	if (!conversation) return
 
 	conversation.on("message.delta", ({ delta, kind }) => {
-		// WebLLM only emits kind: "text" deltas (no native reasoning channel).
-		// Feed each delta through the per-turn think-splitter and update DOM.
-		if (kind === "text" && currentTurnHandle) {
-			// Measure time-to-first-token: record the time of the first delta.
-			if (firstTokenTime === null) {
-				firstTokenTime = performance.now()
-			}
+		if (!currentTurnHandle) return
 
-			// Feed into the current turn's think splitter.
-			const { thoughtDelta, answerDelta } = currentThinkSplitter.push(delta)
+		// Measure time-to-first-token. Outside the `kind` switch on purpose: a turn
+		// that opens with reasoning would otherwise not be measured until its first
+		// answer token.
+		if (firstTokenTime === null) {
+			firstTokenTime = performance.now()
+		}
 
-			// If thought content exists, reveal the thought region.
-			if (thoughtDelta && !thoughtRegionRevealed) {
-				ui.revealThoughtRegion(currentTurnHandle)
-				thoughtRegionRevealed = true
-			}
-
-			// Append thought and answer deltas to the DOM.
-			if (thoughtDelta) {
-				ui.appendThoughtDelta(currentTurnHandle, thoughtDelta)
-			}
-			if (answerDelta) {
-				ui.appendAnswerDelta(currentTurnHandle, answerDelta)
-			}
+		// The conversation was created with `parseThink: true`, so the framework
+		// has already split the stream — route each channel to its own region.
+		if (kind === "reasoning") {
+			ui.appendThoughtDelta(currentTurnHandle, delta)
+		} else if (kind === "text") {
+			ui.appendAnswerDelta(currentTurnHandle, delta)
 		}
 	})
 }
@@ -276,18 +271,6 @@ function wireConversationEvents() {
  * @type {string | null}
  */
 let currentTurnHandle = null
-
-/**
- * Track whether we've already revealed the thought region for the current turn.
- * @type {boolean}
- */
-let thoughtRegionRevealed = false
-
-/**
- * Track the per-turn think splitter for parsing <think>...</think> blocks.
- * @type {ReturnType<typeof createThinkSplitter>}
- */
-let currentThinkSplitter = null
 
 /**
  * Send a message and drive the agent loop with streaming.
@@ -323,8 +306,6 @@ async function sendMessage(text) {
 
 	// Begin the assistant turn and track its handle for streaming updates.
 	currentTurnHandle = ui.beginAssistantTurn()
-	currentThinkSplitter = createThinkSplitter()
-	thoughtRegionRevealed = false
 
 	// Measure time-to-first-token: reset tracking at the start of each turn.
 	sendStartTime = performance.now()
