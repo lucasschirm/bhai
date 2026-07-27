@@ -29,6 +29,9 @@ import { defineConfig } from "vite"
  *   },
  */
 export default defineConfig({
+	// GitHub Pages serves project pages under /<repo>/, not /. Local dev and
+	// `pnpm run preview` keep serving from / by leaving GITHUB_PAGES unset.
+	base: process.env.GITHUB_PAGES ? "/bhai/" : "/",
 	optimizeDeps: {
 		exclude: ["@mlc-ai/web-llm"],
 	},

@@ -1,0 +1,60 @@
+name: Deploy Pages
+
+# Publishes the example/ WebLLM demo to GitHub Pages after every merge to
+# main. Requires the repo's Settings > Pages > Build and deployment > Source
+# to be set to "GitHub Actions" (one-time manual setup).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9.15.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build library
+        run: pnpm run build
+
+      - name: Build example site
+        run: pnpm --filter bhai-example run build
+        env:
+          GITHUB_PAGES: "true"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: example/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
