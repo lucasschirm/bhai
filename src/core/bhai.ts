@@ -24,6 +24,12 @@
 // one kernel directory; the behavioral contract is unchanged.
 
 import Ajv, { type ErrorObject } from "ajv"
+import {
+	type BHAIConversation,
+	BHAIConversationImpl,
+	type ConversationSnapshot,
+	type CreateConversationOptions,
+} from "../conversation/conversation.js"
 import { ToolRegistry } from "../tools/registry.js"
 import type { JSONSchema } from "../types/content.js"
 import type { EmitResult, Unsubscribe } from "../types/events.js"
@@ -31,8 +37,11 @@ import type {
 	BHAICommandDefinition,
 	BHAIDriver,
 	BHAIToolDefinition,
+	ConversationStore,
 	McpServerConfig,
+	MemoryStore,
 	ModelInfo,
+	SkillResolver,
 	ToolExecute,
 	ToolFilter,
 } from "../types/index.js"
@@ -51,6 +60,12 @@ import {
 	resolveGetMcpsHooks,
 	resolveModelSourceHooks,
 } from "./mcp-integration.js"
+import {
+	type ConversationsAccessor,
+	createConversationsAccessor,
+	resolveActiveConversationStore,
+	wireAutoSave,
+} from "./storage.js"
 
 // `ajv` is chosen as the JSON Schema validator for TASK_0006's config step
 // (§ 7.4) over alternatives (zod-to-JSON-Schema bridges, a hand-rolled
@@ -133,8 +148,8 @@ export interface BHAIPluginCapabilities {
 	modelSource?: () => Promise<unknown[]>
 	/** Refined to `McpServerConfig[]` once TASK_0015 lands. */
 	getMcps?: () => Promise<unknown[]>
-	/** Refined to `BHAIToolDefinition[]` once TASK_0008 lands. */
-	tools?: unknown[]
+	/** Tool definitions declared by this plugin. Registered via `bh.addTool()` during `init()`. */
+	tools?: BHAIToolDefinition[]
 	/** Refined to `Record<string, BHAICommandDefinition>` once TASK_0010 lands. */
 	commands?: Record<string, BHAICommandDefinition>
 	/** Declares host-supplied plugin configuration (§ 7.4); validated by TASK_0006. */
@@ -143,12 +158,12 @@ export interface BHAIPluginCapabilities {
 	auth?: unknown
 	/** Refined once the § 11.8 RAG task lands. */
 	retriever?: unknown
-	/** Refined once the § 11.4 skill-resolver task lands. */
-	skillResolver?: unknown
-	/** Refined once the § 11.4 conversation-store task lands. */
-	conversationStore?: unknown
-	/** Refined once the § 11.4 memory-store task lands. */
-	memoryStore?: unknown
+	/** Refined by TASK_0029 (§ 11.4): skill-resolver for '/slash' prompt expansion. */
+	skillResolver?: SkillResolver
+	/** Refined by TASK_0029 (§ 11.4): conversation-store for auto-save on message(sent). */
+	conversationStore?: ConversationStore
+	/** Refined by TASK_0029 (§ 11.4): memory-store for durable agent memory. */
+	memoryStore?: MemoryStore
 }
 
 /**
@@ -281,6 +296,20 @@ export class BHAI {
 	 * `initialize` framework event.
 	 */
 	private initialized = false
+
+	/**
+	 * Tracks whether this BHAI instance has been disposed (TASK_0035).
+	 * Set to `true` after all teardown steps complete in `dispose()`.
+	 * Used by `assertNotDisposed()` to reject further use after teardown.
+	 */
+	private disposed = false
+
+	/**
+	 * Registry of live conversations (TASK_0035). Every conversation created
+	 * via `createConversation()` or `loadConversation()` is added here.
+	 * At `dispose()` time, each is aborted and awaited until idle.
+	 */
+	private readonly liveConversations: Set<BHAIConversation> = new Set()
 
 	/**
 	 * The framework event bus (§ 8). All `on()`/`emit()` calls delegate here.
@@ -456,6 +485,26 @@ export class BHAI {
 	 */
 	private attributionScope: string | undefined
 
+	/**
+	 * Accessor for conversation-store operations (TASK_0029, § 11.4).
+	 *
+	 * Populated during `bh.init()` with a {@link ConversationsAccessor} that delegates
+	 * to the active `ConversationStore` (if registered), or throws a descriptive error
+	 * if no store is present. The error-on-missing-store policy is intentional: a host
+	 * calling `list()` with no store almost certainly has a configuration bug.
+	 *
+	 * Currently exposes only `list(query?)`, which delegates to `store.list()`.
+	 * Future tasks may extend this with `load()`, `delete()`, etc.
+	 */
+	private conversationsAccessor: ConversationsAccessor = {
+		list: () => Promise.reject(new Error("bh.init() has not completed yet")),
+	}
+
+	/** Public read-only accessor for the conversations API. */
+	get conversations(): ConversationsAccessor {
+		return this.conversationsAccessor
+	}
+
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
 		// Hand every registry a view onto activation state. Each registry filters
@@ -488,8 +537,12 @@ export class BHAI {
 	 * `name` is a silent no-op (its `setup`/capabilities are never
 	 * registered). Unnamed form-1 factories each get a distinct auto-name
 	 * and are never treated as duplicates.
+	 *
+	 * **Security**: Plugins run with the host's full privileges and are not sandboxed.
+	 * Hosts must gate what they `use()` — the framework provides no sandbox.
 	 */
 	use(plugin: BHAIPluginLike): this {
+		this.assertNotDisposed()
 		const normalized = this.normalize(plugin)
 		if (this.registeredNames.has(normalized.name)) {
 			// § 7.1: duplicate use() with the same name is ignored. Do not
@@ -689,9 +742,11 @@ export class BHAI {
 	/**
 	 * Emit a namespaced custom event on the framework bus (§ 8.4). Throws
 	 * synchronously (before dispatch begins) if `event` is a reserved kernel
-	 * name or an un-namespaced custom name; the one documented exception is
-	 * `compact`, a legal manual trigger. Resolves with an {@link EmitResult}
-	 * after the dispatch and any re-entrantly queued dispatches have settled.
+	 * name or an un-namespaced custom name. Special case (TASK_0031): `emit('compact', ...)`
+	 * always throws with a clear message, since compaction is conversation-scoped
+	 * and cannot be triggered from the framework level. Use `conversation.emit('compact', ...)`
+	 * instead. Resolves with an {@link EmitResult} after the dispatch and any
+	 * re-entrantly queued dispatches have settled.
 	 *
 	 * Implemented by TASK_0004 as a thin delegation to the internally-owned
 	 * {@link EventBus} instance.
@@ -701,6 +756,12 @@ export class BHAI {
 		payload: Payload,
 		options?: DispatchOptions,
 	): Promise<EmitResult<Payload>> {
+		// Compaction is conversation-scoped (TASK_0031) — throw on framework-level emit
+		if (event === "compact") {
+			throw new Error(
+				"bh.emit('compact', ...): compaction is conversation-scoped — call conversation.emit('compact', ...) instead (TASK_0031)",
+			)
+		}
 		return this.bus.emit(event, payload, options)
 	}
 
@@ -720,6 +781,24 @@ export class BHAI {
 			return
 		}
 		this.initialized = true
+
+		// TASK_0040 (issue #6): Register tools declared in capability-object form.
+		// This happens at the START of init(), before running initialize hooks,
+		// so a plugin's initialize hook can already call bh.listTools() and expect
+		// its own declared tools to be visible.
+		for (const plugin of this.plugins) {
+			const toolDefs = plugin.capabilities?.tools
+			if (toolDefs && Array.isArray(toolDefs)) {
+				// `runAs` so declared tools are attributed to their plugin exactly
+				// like imperatively-registered ones. Without it, the `tools:` key
+				// would be the one registration path producing ungatable tools.
+				this.runAs(plugin.name, () => {
+					for (const toolDef of toolDefs) {
+						this.addTool(toolDef as BHAIToolDefinition)
+					}
+				})
+			}
+		}
 
 		for (const plugin of this.plugins) {
 			const hook = plugin.capabilities?.initialize
@@ -794,21 +873,104 @@ export class BHAI {
 			this.attributeMcp(hook.owner, handle)
 		})
 
+		// TASK_0029 (§ 11.4): Wire up conversation-store auto-save and initialize
+		// the conversations accessor. This happens after all hook resolution so the
+		// active store (if any) is known, and before the `initialize` event fires
+		// so any handler can already call `bh.conversations.list()`.
+		const activeConversationStore = resolveActiveConversationStore(this.plugins)
+		wireAutoSave(this, activeConversationStore)
+		this.conversationsAccessor = createConversationsAccessor(activeConversationStore)
+
 		await this.bus.dispatch("initialize", { bh: this })
 	}
 
 	/**
-	 * TODO(TASK_0023): create a new conversation (§ 11.1).
-	 * TASK_0005 implements a partial dispose() for plugin-hook ordering; full
-	 * teardown semantics are TASK_0035's.
+	 * Create a new conversation (ARCHITECTURE.md § 11.1).
+	 *
+	 * Behavior per § 8.5 step 3:
+	 * 1. Construct a new `BHAIConversationImpl` (fresh `id`, empty `messages`,
+	 *    `status: 'idle'`, `meta: {}`, `usage: { inputTokens: 0, outputTokens: 0 }`).
+	 * 2. Determine whether a model is already known: if `options?.model` is set,
+	 *    OR this `BHAI` instance was constructed with a `defaultModel`, the
+	 *    conversation has an explicit/default model and `model.resolve` must NOT
+	 *    fire. Otherwise, fire `model.resolve` with payload
+	 *    `{ catalogue, conversation }` (obtain `catalogue` via `listModels()`,
+	 *    which is already implemented). Await the result — a handler may return
+	 *    `{ model }` to pick one.
+	 * 3. Fire `conversation.created` (via the shared mirroring mechanism) with
+	 *    payload `{ conversation }`.
+	 * 4. Return the conversation.
 	 */
-	async createConversation(): Promise<never> {
-		throw new Error("bh.createConversation(): not implemented — see TASK_0023")
+	async createConversation(options?: CreateConversationOptions): Promise<BHAIConversation> {
+		this.assertNotDisposed()
+		// Step 1: Construct the conversation with fresh state
+		const conversation = new BHAIConversationImpl(this, options)
+
+		// Step 2: Determine model and fire model.resolve if needed
+		const explicitModel = options?.model ?? this.options.defaultModel
+		if (!explicitModel) {
+			// No explicit/default model — fire model.resolve
+			const catalogue = await this.listModels()
+			const modelResolveResult = await this.bus.dispatch("model.resolve", {
+				catalogue,
+				conversation,
+			})
+			// If a handler returned a model patch, apply it
+			if (modelResolveResult.patch && "model" in modelResolveResult.patch) {
+				conversation._setResolvedModel(modelResolveResult.patch.model as string | undefined)
+			}
+		} else {
+			// Explicit or default model provided — set it directly
+			conversation._setResolvedModel(explicitModel)
+		}
+
+		// Step 3: Fire conversation.created via the shared mirroring mechanism
+		await conversation._fireCreated()
+
+		// Step 4: Register in live conversation tracking (TASK_0035)
+		this.liveConversations.add(conversation)
+
+		// Step 5: Return the conversation
+		return conversation
 	}
 
-	/** TODO(TASK_0023): load a conversation from a snapshot (§ 11.3). */
-	async loadConversation(): Promise<never> {
-		throw new Error("bh.loadConversation(): not implemented — see TASK_0023")
+	/**
+	 * Load a conversation from a snapshot (ARCHITECTURE.md § 11.3).
+	 *
+	 * For this task only (full contract is TASK_0028's job): accept any value
+	 * loosely matching the shape `{ v?, id: string, messages: unknown[], model?, params?, usage?, meta? }`.
+	 * Do a minimal presence/type check and throw a plain Error if even that loose
+	 * shape doesn't hold. Do NOT implement version-migration policy, full message-
+	 * shape validation, or model-re-resolution-on-missing-driver here.
+	 *
+	 * Behavior per § 8.5:
+	 * 1. Construct a `BHAIConversationImpl` reusing the snapshot's `id` (not a
+	 *    freshly generated one), `messages` (shallow-copied), `meta` (from
+	 *    snapshot, defaulting to `{}`), `usage` (from snapshot, defaulting to
+	 *    zeros), `status: 'idle'`.
+	 * 2. Mark the conversation as already started so TASK_0024's `ensureStarted()`
+	 *    never fires `start` for a loaded conversation.
+	 * 3. Determine whether the snapshot's model is still available (minimal check:
+	 *    is `snapshot.model` a non-empty string that appears in `listModels()`'s
+	 *    output). If unavailable, fire `model.resolve`. If available, use directly.
+	 * 4. Fire `conversation.loaded` (via the shared mirroring mechanism) with
+	 *    payload `{ conversation, snapshot }` — NOT `conversation.created`.
+	 * 5. Return the conversation.
+	 */
+	async loadConversation(
+		snapshot: unknown,
+		options?: CreateConversationOptions,
+	): Promise<BHAIConversation> {
+		this.assertNotDisposed()
+		// Delegate to fromSnapshot() for full versioned reconstruction contract.
+		// This replaces the loose TASK_0023 shape check with the full TASK_0028
+		// contract: version validation, shape checking, message restoration,
+		// model re-resolution, and proper event firing.
+		const { fromSnapshot } = await import("../conversation/snapshot.js")
+		const conversation = await fromSnapshot(snapshot, this, options)
+		// Register in live conversation tracking (TASK_0035)
+		this.liveConversations.add(conversation)
+		return conversation
 	}
 
 	/**
@@ -831,6 +993,7 @@ export class BHAI {
 		parameters?: JSONSchema,
 		execute?: ToolExecute,
 	): void {
+		this.assertNotDisposed()
 		if (typeof defOrName === "string") {
 			this.toolRegistry.addTool(defOrName, parameters as JSONSchema, execute as ToolExecute)
 			this.attribute(this.toolOwners, defOrName)
@@ -870,6 +1033,7 @@ export class BHAI {
 	 * `{ driver }`. Implemented by TASK_0009.
 	 */
 	addDriver(driver: BHAIDriver): void {
+		this.assertNotDisposed()
 		this.driverRegistry.addDriver(driver)
 		this.attribute(this.driverOwners, driver.id)
 	}
@@ -903,14 +1067,85 @@ export class BHAI {
 		return [...driverModels, ...hookModels]
 	}
 
-	/** TODO(TASK_0032): one-shot LLM call detached from any conversation (§ 6). */
-	async complete(): Promise<never> {
-		throw new Error("bh.complete(): not implemented — see TASK_0032")
+	/**
+	 * Generic accessor for multi-plugin capability contributions (ARCHITECTURE.md § 11.8).
+	 *
+	 * Retrieves every plugin's contribution registered under a given capability-object key,
+	 * in `use()`-registration order. This is a pure read-only projection over the already-stored
+	 * per-plugin `capabilities` object preserved by `use()` — no new storage, no changes to
+	 * `use()` itself.
+	 *
+	 * The mechanism is generic and reusable for any current or future capability key without
+	 * adding new kernel API. Today's documented consumer is `retriever` (§ 11.8's RAG plugin),
+	 * but the implementation accepts any string key, including keys not yet in the
+	 * `BHAIPluginCapabilities` type interface — runtime extensibility is the entire point
+	 * (line 1460-1462 of § 11.8: "the same mechanism serves future contribution points
+	 * without new kernel API").
+	 *
+	 * @template T The inferred type of contributions. Since contributions come from plugin
+	 *   capability objects and this method is agnostic to their shape, the type is unchecked —
+	 *   it is purely a call-site convenience (e.g., `bh.getContributions<Retriever>('retriever')`
+	 *   documents intent to the reader, but does not validate the runtime value's shape).
+	 * @param key The capability-object key to query. Even keys not in `BHAIPluginCapabilities`'s
+	 *   named field list work identically at runtime (e.g., a future capability key a plugin
+	 *   ecosystem adds without modifying this kernel will still be retrievable).
+	 * @returns An array of all contributions under that key, in registration order. Empty
+	 *   array if zero plugins have defined a value for that key, or if that key is unknown.
+	 *   Never returns `undefined` and never throws — unknown/unregistered keys degrade gracefully
+	 *   to an empty result rather than an error.
+	 */
+	getContributions<T>(key: string): T[] {
+		const results: T[] = []
+		for (const plugin of this.plugins) {
+			// Type escape hatch needed because `key` is a runtime string, but
+			// `BHAIPluginCapabilities` is a static interface with named optional fields.
+			// The whole purpose of this method is to accept arbitrary (including future)
+			// keys that may not yet be in the interface, so the cast is intentional and
+			// narrow: it only escapes the type check for the one lookup operation, and
+			// the result is narrowed back to `T` by the caller's generic parameter.
+			const value = plugin.capabilities?.[key as keyof BHAIPluginCapabilities]
+			if (value !== undefined) {
+				results.push(value as T)
+			}
+		}
+		return results
 	}
 
-	/** TODO(TASK_0033): embedding side channel — RAG substrate (§ 11.8). */
-	async embed(): Promise<never> {
-		throw new Error("bh.embed(): not implemented — see TASK_0033")
+	/**
+	 * One-shot LLM call detached from any conversation (ARCHITECTURE.md § 6).
+	 *
+	 * Resolves a model, sends messages, drains the response stream, returns text and usage.
+	 * Fires zero conversation-bus events; only `request` lifecycle events are permitted.
+	 * The substrate for plugins that need autonomous LLM calls (auto-title, summarization,
+	 * memory extraction — see ARCHITECTURE.md § 11.7).
+	 *
+	 * Implemented by TASK_0032 as a thin delegation to the exported {@link complete}
+	 * function in `src/core/complete.ts`, passing `this` (the BHAI instance) and the
+	 * host-level defaultModel as context.
+	 */
+	async complete(
+		req: import("./complete.js").CompleteRequest,
+	): Promise<import("./complete.js").CompleteResult> {
+		this.assertNotDisposed()
+		const { complete } = await import("./complete.js")
+		return complete(this, req, this.options.defaultModel)
+	}
+
+	/**
+	 * Embedding side channel — RAG substrate (ARCHITECTURE.md § 6, § 11.8).
+	 *
+	 * Resolves a model, checks that the driver declares `embeddings: true` capability,
+	 * and delegates to `driver.embed()` to produce vectors. Fires zero conversation-bus
+	 * events; intended as a portable, driver-agnostic indexing substrate for RAG plugins.
+	 *
+	 * Implemented by TASK_0033 as a thin delegation to the exported {@link embed}
+	 * function in `src/core/embed.ts`, passing `this` (the BHAI instance) and the
+	 * host-level defaultModel as context.
+	 */
+	async embed(req: import("./embed.js").EmbedRequest): Promise<import("./embed.js").EmbedResult> {
+		this.assertNotDisposed()
+		const { embed } = await import("./embed.js")
+		return embed(this, req, this.options.defaultModel)
 	}
 
 	/**
@@ -927,6 +1162,7 @@ export class BHAI {
 	 * capability-object path is TASK_0003/0005's job, not TASK_0010's.
 	 */
 	addCommand(name: string, def: BHAICommandDefinition): void {
+		this.assertNotDisposed()
 		this.commandRegistry.addCommand(name, def)
 		this.attribute(this.commandOwners, name)
 	}
@@ -972,6 +1208,7 @@ export class BHAI {
 	 *                 does not depend on the plugin's option types.
 	 */
 	async addMcp(config: McpServerConfig, options?: unknown): Promise<McpHandle> {
+		this.assertNotDisposed()
 		// Capture the scope BEFORE awaiting: `attributionScope` is a synchronous
 		// ambient window and does not survive the await below.
 		const owner = this.attributionScope
@@ -1000,27 +1237,96 @@ export class BHAI {
 		}
 	}
 
+	// ---------------------------------------------------------------------------
+	// Post-dispose guard (TASK_0035)
+	// ---------------------------------------------------------------------------
+
 	/**
-	 * Runs plugin `dispose` hooks in **reverse** `use()`-registration order
-	 * (last-registered plugin's `dispose` runs first), then fires the `dispose`
-	 * framework event (§ 7.3 step 4).
+	 * Guard that rejects further use after `dispose()` has completed (TASK_0035).
 	 *
-	 * PARTIAL (TASK_0005): only hook ordering + the `dispose` event are
-	 * implemented here. Full teardown — aborting in-flight turns, unwinding
-	 * tool/command/driver/MCP registrations, closing MCP sessions — is
-	 * TASK_0035's job.
+	 * Throws `Error('BHAI instance has been disposed')` if `this.disposed` is true.
+	 * Called at the top of methods where a post-dispose call would be wrong to allow silently.
+	 *
+	 * @throws Error if the instance has been disposed.
+	 * @internal
+	 */
+	private assertNotDisposed(): void {
+		if (this.disposed) {
+			throw new Error("BHAI instance has been disposed")
+		}
+	}
+
+	/**
+	 * Tear down the BHAI instance — abort conversations, fire `dispose` event, run plugin
+	 * dispose hooks, close MCP sessions, and guard against further use.
+	 *
+	 * ORDERING RECONCILIATION (TASK_0035, per ARCHITECTURE.md § 8.5 and § 6):
+	 * This method implements the complete teardown sequence in a fixed order:
+	 * 1. Abort every in-flight conversation (stops new activity, makes status terminal)
+	 * 2. Fire the `dispose` framework event (per § 8.5: "plugins' dispose hooks run after it")
+	 * 3. Run plugin `dispose` hooks in reverse `use()`-registration order
+	 * 4. Close every attached MCP session (gives plugins one final chance to use MCP resources)
+	 * 5. Set the `disposed` flag so post-dispose calls are rejected
+	 *
+	 * Explicit assumption (§ 11.1): calling `abort()` is synchronous but the conversation's
+	 * status reaches its terminal state asynchronously. This method calls `waitForIdle()` on
+	 * each conversation after abort to ensure all cleanups have settled before proceeding
+	 * to step 2.
 	 */
 	async dispose(): Promise<void> {
+		// Step 1: Abort every live conversation and wait for each to reach terminal state or idle.
+		// Explicit assumption (§ 11.1): abort() is synchronous but conversation status settling
+		// to terminal state may take a microtask/tick or two. Call waitForIdle() which resolves
+		// when status is idle OR when all queues are empty. However, if abort() immediately
+		// sets status to 'aborted', waitForIdle() will never emit 'idle', so we also race
+		// against a microtask flush to avoid indefinite hangs.
+		for (const conversation of this.liveConversations) {
+			conversation.abort("BHAI instance disposed")
+			// Use Promise.race with queueMicrotask to avoid hanging if status is already terminal
+			await Promise.race([
+				conversation.waitForIdle(),
+				new Promise<void>((resolve) => queueMicrotask(resolve)),
+			])
+		}
+
+		// Step 2: Fire the `dispose` framework event (BEFORE hooks, per § 8.5).
+		await this.bus.dispatch("dispose", { bh: this })
+
+		// Step 3: Run plugin `dispose` hooks in reverse registration order (already built by TASK_0005).
 		for (const plugin of [...this.plugins].reverse()) {
 			const hook = plugin.capabilities?.dispose
 			if (hook) {
 				await hook({ bh: this })
 			}
 		}
-		// TODO(TASK_0035): abort in-flight turns, unwind tool/command/driver/MCP
-		// registrations made during setup()/initialize(), close MCP sessions.
-		// This task only handles dispose-hook ordering.
-		await this.bus.dispatch("dispose", { bh: this })
+
+		// Step 4: Close every attached MCP session (via Promise.allSettled).
+		const closePromises = this.mcpRegistry
+			.list()
+			.map((handle) => Promise.resolve().then(() => handle.client.close?.()))
+		const closeResults = await Promise.allSettled(closePromises)
+		const closeErrors = closeResults
+			.map((result, idx) => {
+				if (result.status === "rejected") {
+					return {
+						index: idx,
+						error: result.reason,
+					}
+				}
+				return null
+			})
+			.filter((e) => e !== null)
+
+		// Step 5: Set the `disposed` flag.
+		this.disposed = true
+
+		// If any MCP close calls rejected, aggregate and throw after all have been attempted.
+		if (closeErrors.length > 0) {
+			const errorMessages = closeErrors
+				.map(({ error }) => (error instanceof Error ? error.message : String(error)))
+				.join("; ")
+			throw new Error(`BHAI.dispose(): MCP session close failed: ${errorMessages}`)
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -1195,6 +1501,62 @@ export class BHAI {
 	/** @internal Read-only view of the stored host option for a key. */
 	__testOption<K extends keyof BHAIHostOptions>(key: K): BHAIHostOptions[K] {
 		return this.options[key]
+	}
+
+	/**
+	 * Internal: dispatch an event on the framework bus via the unguarded `dispatch()` path.
+	 *
+	 * Used by `BHAIConversationImpl` to fire reserved framework events
+	 * (e.g. `conversation.message`, `conversation.context`) that skips the
+	 * public `emit()`'s reserved-name check. This is the same internal bypass
+	 * the kernel uses for its own reserved-name events.
+	 *
+	 * @internal
+	 */
+	_dispatch<Payload>(
+		event: string,
+		payload: Payload,
+		options?: DispatchOptions,
+	): Promise<EmitResult<Payload>> {
+		return this.bus.dispatch(event, payload, options)
+	}
+
+	/**
+	 * Internal: get a registered driver by ID.
+	 *
+	 * Returns the driver if registered, undefined otherwise. Used by TASK_0025's
+	 * agent loop to resolve a conversation's model ref to an actual driver instance.
+	 *
+	 * @internal
+	 */
+	_getDriver(driverId: string): BHAIDriver | undefined {
+		return this.driverRegistry.get(driverId)
+	}
+
+	/**
+	 * Internal: get a tool definition by name.
+	 *
+	 * Returns the registered `BHAIToolDefinition` or `undefined` if not found.
+	 * Used by TASK_0026's agent-loop tool-execution pipeline to look up tools
+	 * for validation and execution.
+	 *
+	 * @internal
+	 */
+	_getTool(name: string): BHAIToolDefinition | undefined {
+		return this.toolRegistry.get(name)
+	}
+
+	/**
+	 * Internal: get the host's default system prompt.
+	 *
+	 * Returns the system prompt provided in the `BHAIHostOptions` at construction,
+	 * or undefined if none was provided. Used by `BHAIConversationImpl`'s constructor
+	 * to compute layer 1-2 of the system-prompt assembly.
+	 *
+	 * @internal
+	 */
+	get _hostSystemPrompt(): string | undefined {
+		return this.options.systemPrompt
 	}
 
 	// ---------------------------------------------------------------------------

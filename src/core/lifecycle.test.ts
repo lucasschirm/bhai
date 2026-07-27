@@ -107,7 +107,7 @@ describe("BHAI.dispose — hook reverse ordering (§ 7.3 step 4)", () => {
 		expect(order).toEqual(["B", "A"])
 	})
 
-	it("fires the dispose framework event after all dispose hooks resolve", async () => {
+	it("fires the dispose framework event before dispose hooks run (§ 8.5)", async () => {
 		const order: string[] = []
 		const bh = new BHAI()
 		bh.use({
@@ -128,7 +128,10 @@ describe("BHAI.dispose — hook reverse ordering (§ 7.3 step 4)", () => {
 
 		await bh.dispose()
 
-		expect(order).toEqual(["B", "A", "event"])
+		// Per ARCHITECTURE.md § 8.5: "plugins' dispose hooks run in reverse order
+		// after it" (after the dispose event). This corrects a prior assumption
+		// that had hooks running first — the event must fire first.
+		expect(order).toEqual(["event", "B", "A"])
 	})
 })
 
@@ -197,5 +200,65 @@ describe("BHAI.init/dispose — plugins without hooks are safely skipped", () =>
 
 		await expect(bh.init()).resolves.toBeUndefined()
 		expect(initOrder).toEqual(["with-hook"])
+	})
+})
+
+describe("BHAI.init — capability-object tools registration (issue #6)", () => {
+	it("registers tools declared in plugin.capabilities.tools via bh.addTool() at init() start", async () => {
+		const bh = new BHAI()
+		bh.use({
+			name: "tools-plugin",
+			tools: [
+				{
+					name: "tool-1",
+					description: "First tool",
+					inputSchema: { type: "object" },
+					execute: async () => "result-1",
+				},
+				{
+					name: "tool-2",
+					description: "Second tool",
+					inputSchema: { type: "object" },
+					execute: async () => "result-2",
+				},
+			],
+		})
+
+		await bh.init()
+
+		// Verify both tools are now in the registry
+		const tools = bh.listTools()
+		expect(tools).toContainEqual(expect.objectContaining({ name: "tool-1" }))
+		expect(tools).toContainEqual(expect.objectContaining({ name: "tool-2" }))
+	})
+
+	it("capability-object tools are visible to initialize hooks that run after tool registration", async () => {
+		const visibleTools: string[] = []
+		const bh = new BHAI()
+		bh.use({
+			name: "tools-plugin",
+			tools: [
+				{
+					name: "pre-registered-tool",
+					description: "A tool",
+					inputSchema: { type: "object" },
+					execute: async () => "ok",
+				},
+			],
+		})
+		bh.use({
+			name: "checker-plugin",
+			initialize: () => {
+				// This hook runs AFTER tools are registered, so it should see them
+				const tools = bh.listTools()
+				const names = tools.map((t) => t.name)
+				visibleTools.push(...names)
+			},
+		})
+
+		await bh.init()
+
+		// The checker plugin's initialize hook should have seen the pre-registered tool
+		expect(visibleTools).toContain("pre-registered-tool")
 	})
 })

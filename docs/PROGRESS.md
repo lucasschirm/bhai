@@ -13,7 +13,7 @@ Source of truth for task files: `../tasks/` (parent repo).
 | Task | Title                      | Status |
 | ---- | -------------------------- | ------ |
 | 0001 | Repo scaffolding & tooling | [x]    |
-| 0044 | Open-questions triage      | [ ]    |
+| 0044 | Open-questions triage      | [x]    |
 | 0002 | Core shared types          | [x]    |
 
 ## Phase 1 — Kernel core (plugins, events, config)
@@ -35,64 +35,238 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0010 | Command registry                                      | [x]    |
 | 0011 | MCP client — handshake & discovery                    | [x]    |
 | 0012 | MCP client — resync, calls, progress, cancellation    | [x]    |
-| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [ ]    |
-| 0014 | MCP capabilities — elicitation, sampling, roots       | [ ]    |
-| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [ ]    |
-| 0016 | Deferred tool loading (`search_tools`)                | [ ]    |
-| 0017 | Tool availability filtering seam                      | [ ]    |
+| 0013 | MCP client — human-in-the-loop & untrusted-by-default | [x]    |
+| 0014 | MCP capabilities — elicitation, sampling, roots       | [x]    |
+| 0015 | `addMcp()` + `getMcps`/`modelSource` hooks            | [x]    |
+| 0016 | Deferred tool loading (`search_tools`)                | [x]    |
+| 0017 | Tool availability filtering seam                      | [x]    |
 
 ## Phase 3 — Drivers & model selection
 
 | Task | Title                                   | Status |
 | ---- | --------------------------------------- | ------ |
-| 0018 | Transport retry policy & request events | [ ]    |
-| 0019 | WebLLM driver plugin                    | [ ]    |
-| 0020 | Ollama driver plugin                    | [ ]    |
-| 0021 | Credential resolution chain             | [ ]    |
-| 0022 | Model selection & switching             | [ ]    |
+| 0018 | Transport retry policy & request events | [x]    |
+| 0019 | WebLLM driver plugin                    | [x]    |
+| 0020 | Ollama driver plugin                    | [x]    |
+| 0021 | Credential resolution chain             | [x]    |
+| 0022 | Model selection & switching             | [x]    |
 
 ## Phase 4 — Conversations & the agent loop
 
 | Task | Title                                                  | Status |
 | ---- | ------------------------------------------------------ | ------ |
-| 0023 | Conversation surface skeleton                          | [ ]    |
-| 0024 | `start` event & system-prompt layering                 | [ ]    |
-| 0025 | Agent loop core — sendMessage, context, message states | [ ]    |
-| 0026 | Tool execution in the loop                             | [ ]    |
-| 0027 | Loop termination & guardrails                          | [ ]    |
-| 0028 | Conversation serialization contract                    | [ ]    |
-| 0029 | Storage interfaces (no implementations)                | [ ]    |
-| 0030 | Steering & concurrent input                            | [ ]    |
-| 0031 | Compaction pipeline                                    | [ ]    |
+| 0023 | Conversation surface skeleton                          | [x]    |
+| 0024 | `start` event & system-prompt layering                 | [x]    |
+| 0025 | Agent loop core — sendMessage, context, message states | [x]    |
+| 0026 | Tool execution in the loop                             | [x]    |
+| 0027 | Loop termination & guardrails                          | [x]    |
+| 0028 | Conversation serialization contract                    | [x]    |
+| 0029 | Storage interfaces (no implementations)                | [x]    |
+| 0030 | Steering & concurrent input                            | [x]    |
+| 0031 | Compaction pipeline                                    | [x]    |
 
 ## Phase 5 — Kernel utilities & reference examples
 
 | Task | Title                             | Status |
 | ---- | --------------------------------- | ------ |
-| 0032 | `complete()` one-shot LLM utility | [ ]    |
-| 0033 | `embed()` side channel            | [ ]    |
-| 0034 | `getContributions()` accessor     | [ ]    |
-| 0035 | `dispose()` teardown              | [ ]    |
-| 0036 | Example: Task-management plugin   | [ ]    |
-| 0037 | Example: Agent-memory plugin      | [ ]    |
-| 0038 | Example: RAG plugin (both shapes) | [ ]    |
+| 0032 | `complete()` one-shot LLM utility | [x]    |
+| 0033 | `embed()` side channel            | [x]    |
+| 0034 | `getContributions()` accessor     | [x]    |
+| 0035 | `dispose()` teardown              | [x]    |
+| 0036 | Example: Task-management plugin   | [x]    |
+| 0037 | Example: Agent-memory plugin      | [x]    |
+| 0038 | Example: RAG plugin (both shapes) | [x]    |
 
-Note on TASK_0034/TASK_0035: plugin activation (`enablePlugin`/`disablePlugin`)
-landed the **attribution** substrate both tasks need — the kernel now records
-which plugin contributed every tool, command, driver, MCP server and event
-handler, and `listPlugins()` reports it. TASK_0034 still owns the public
-`getContributions()` shape; TASK_0035 still owns real teardown, which activation
-deliberately does not do (it hides contributions, it does not unregister them).
+Note on plugin activation vs. TASK_0034/TASK_0035, which all landed independently
+and are complementary rather than overlapping:
+
+- `getContributions(key)` (TASK_0034) reads a **capability-object key**
+  (`retriever`, `memoryStore`, …) across plugins.
+- `listPlugins()` (activation) reports what each plugin **registered into the
+  registries** — tools, commands, drivers, MCP servers, event handlers — plus
+  its enabled state, backed by the kernel's ownership ledger.
+- `dispose()` (TASK_0035) is whole-kernel teardown. Activation deliberately does
+  not unregister anything: it hides a plugin's contributions so the toggle stays
+  reversible and cannot fail. Per-plugin teardown is still unimplemented.
 
 ## Phase 6 — Interop, validation, docs
 
-| Task | Title                                       | Status |
-| ---- | ------------------------------------------- | ------ |
-| 0039 | pi extension interop adapter                | [ ]    |
-| 0040 | OpenCode plugin interop adapter             | [ ]    |
-| 0041 | Security hardening & threat-model checklist | [ ]    |
-| 0042 | PEP mapping validation                      | [ ]    |
-| 0043 | Documentation & README (v0.1 scope)         | [ ]    |
+| Task | Title                                        | Status |
+| ---- | --------------------------------------------- | ------ |
+| 0039 | pi extension interop adapter                 | [x]    |
+| 0040 | OpenCode plugin interop adapter              | [x]    |
+| 0041 | Security hardening & threat-model checklist  | [x]    |
+| 0042 | PEP mapping validation                       | [x]    |
+| 0043 | Documentation & README (v0.1 scope)          | [x]    |
+| 0044 | Open-questions triage                        | [x]    |
+
+All 44 tasks (TASK_0001–TASK_0044) are now complete. See "Recently completed
+(TASK_0039–TASK_0044, Phase 6)" below for the full writeup.
+
+## Recently completed (TASK_0039–TASK_0044, Phase 6)
+
+Interop adapters, security audit, PEP mapping validation, and final docs —
+the last phase of the v0.1 build. Summary:
+
+- **TASK_0039** — `src/plugins/interop/pi/index.ts`: `runPiExtension()`, a
+  thin shim translating pi coding-agent extensions' `ExtensionAPI` onto real
+  BHAI kernel primitives (event bus, tool/command registries, config
+  contract, conversation surface). Implements all 15 non-`idle` rows of the
+  §8.3 pi-column event-mapping table; TUI-bound calls (`ui`/`shortcuts`/
+  `themes`/`session`) are recorded, call-site-specific no-ops. 9 tests in
+  `pi-adapter.test.ts`, including a real registered-and-callable tool, a
+  real `tool(beforeCall)` block-veto (spy-verified `execute` never runs),
+  and the `sendMessage`/`sendUserMessage` loop-driving split exercised
+  through the adapter's own shim methods (not the raw conversation API).
+- **TASK_0040** — `src/plugins/interop/opencode/index.ts`:
+  `runOpenCodePlugin()`, mapping an OpenCode-style plugin's returned hooks
+  object (`tool`, `event`, `chat.message`/`chat.params`,
+  `tool.execute.before`/`after`, `permission.ask`, `config`, `auth`) onto
+  BHAI primitives, including zod-like→JSON-Schema conversion via
+  `.toJSONSchema()` and `permission.ask` composing with (never bypassing)
+  the same `tool(beforeCall)` seam every other approver uses. 7 tests in
+  `opencode-adapter.test.ts`, including both directions of native-approver
+  vs. `permission.ask` composition (spy-verified `execute` never runs in
+  either blocking direction) and a real `resolveCredentials()` call proving
+  tier-1 runtime credentials outrank the adapter's tier-2 `auth` hook.
+  **Also fixes GitHub issue #6**: `BHAI.init()` now registers
+  `plugin.capabilities.tools` via `addTool()` at the start of `init()` (2
+  new tests in `src/core/lifecycle.test.ts`).
+- **TASK_0041** — `docs/security-review.md`: audits all 5 ARCHITECTURE.md
+  §13 security bullets. 4 verified against real, passing tests; 1 gap
+  (bullet 1, "plugins are trusted / no sandbox" documentation) filed
+  against and closed by TASK_0043. Added `src/tools/no-eval.test.ts` (a
+  static regression guardrail — fails if `eval(`/`new Function`/string-arg
+  `setTimeout` ever appears in `src/**`) and one test in
+  `src/tools/availability.test.ts` proving untrusted MCP tool annotations
+  never affect the `trusted` availability flag.
+- **TASK_0042** — `docs/pep-mapping-validation.md`: validates all 12 rows
+  of ARCHITECTURE.md §14's PEP (#1338) mapping table against real tests;
+  11 verified, 1 (`Wait/continuation`, #1390) correctly marked out of scope
+  for v0.1 per the roadmap. Cross-references TASK_0041's bullet 4 for the
+  local-tool-blocking overlap rather than re-filing it.
+- **TASK_0043** — `README.md` rewritten to reflect the finished v0.1
+  framework (security callout, real shipped subpaths, 12-item v0.1
+  scope list, doc pointers); `examples/readme-quickstart.ts`/`.test.ts`
+  added (a real, runnable quickstart against a mocked Ollama HTTP layer,
+  asserting genuinely non-empty response content); TSDoc pass over the
+  public kernel API; closes the TASK_0041 bullet-1 gap (security callout
+  in the README + `BHAI.use()`'s TSDoc). **Also fixes GitHub issue #5**:
+  `BHAIConversationImpl.toJSON()` now delegates to `snapshot.ts`'s
+  `toSnapshot()` instead of inlining a duplicate copy.
+- **TASK_0044** — `docs/open-questions.md`: logs the 2 already-resolved
+  ARCHITECTURE.md §16 items (decorator flavor, compaction summarizer
+  ownership) plus decisions on all 4 open items (event granularity,
+  package name, prompt-injected tool fallback — explicitly ratifying/
+  extending TASK_0017's actual (non-)implementation, OAuth auth-line
+  deferral).
+
+18 new tests added across `src/plugins/interop/pi/pi-adapter.test.ts` (9),
+`src/plugins/interop/opencode/opencode-adapter.test.ts` (7),
+`src/core/lifecycle.test.ts` (2), `src/tools/no-eval.test.ts` (3),
+`src/tools/availability.test.ts` (1), and
+`examples/readme-quickstart.test.ts` (1) — note some of these were fixed
+in place after an independent gate re-verification found several
+originally-shipped tests were not load-bearing (weak assertions that
+passed regardless of whether the underlying behavior worked); every test
+now in the suite has been confirmed to actually fail when its
+corresponding implementation is reverted (593 → 616). All four gates
+(`typecheck`/`lint`/`test`/`build`) green.
+
+GitHub issues #4, #5, #6 (filed during Phase 4/5 review) are resolved:
+#5 and #6 fixed with passing tests (see above); #4 (system-prompt
+`systemPrompt`/`appendSystemPrompt` patch-ordering across handlers) was
+investigated and left open with a detailed comment explaining why a
+correct fix requires either a new order-preserving `EventBus` primitive or
+a breaking change to the `StartEventPatch` contract — out of scope for a
+"small guardrail" fix late in the project; recommended as its own
+follow-up task.
+
+## Recently completed (TASK_0023–TASK_0031, Phase 4)
+
+Conversations & the agent loop — see `docs/core/conversation.md` for the full
+writeup. Summary:
+
+- **TASK_0023** — `BHAIConversationImpl` (`src/conversation/conversation.ts`):
+  the conversation surface, its private mirrored `EventBus`, `bh.createConversation`/
+  `bh.loadConversation`.
+- **TASK_0024** — `src/conversation/system-prompt.ts`: the `start` event,
+  four-layer system-prompt assembly, `prepend` message handling.
+- **TASK_0025** — `src/conversation/agent-loop.ts`: `sendMessage()`/
+  `addMessage()`, the `context` event (deep-copied payload), streaming
+  `message.delta`, the non-tool-calls exit path.
+- **TASK_0026** — tool execution in the loop: `beforeCall→call→processing*→
+  complete|error`, concurrent-by-default batching with `serial`/`serialTools`
+  opt-outs, original-call-order result reordering, validate-and-repair
+  (`maxToolRepairs`, default 2).
+- **TASK_0027** — the bounded, multi-turn loop: `maxIterations` (default 8),
+  the universal `_meta['bhai/terminate']` hint, `turn(end)` veto via
+  `continueWith`, real `abort()` semantics via a shared root `AbortController`.
+- **TASK_0028** — `src/conversation/snapshot.ts`: the full versioned
+  `{ v: 1, id, messages, model, params, usage, meta }` snapshot contract,
+  truncated-prefix loading (host-side forking enablement).
+- **TASK_0029** — `src/types/storage.ts` + `src/core/storage.ts`:
+  `ConversationStore`/`MemoryStore`/`SkillResolver` interfaces (no
+  implementations), auto-save on `message(sent)`, `bh.conversations.list()`.
+- **TASK_0030** — `deliverAs: 'immediate' | 'steer' | 'followUp'`
+  (`ConversationBusyError`, steer/followUp queues), real `waitForIdle()`,
+  the `idle` event.
+- **TASK_0031** — `src/conversation/compaction.ts`: `conversation.compact()`,
+  auto-compaction, `conversation.emit('compact', ...)` interception (closes
+  the seam `src/core/event-bus.ts` left in TASK_0004), never-delete-history
+  folding via `meta.contextIncluded`.
+
+118 new tests added across `src/conversation/*.test.ts` and
+`src/core/storage.test.ts` (376 → 494). All four gates
+(`typecheck`/`lint`/`test`/`build`) green.
+
+## Recently completed (TASK_0032–TASK_0038, Phase 5)
+
+Kernel side-channels (`complete()` / `embed()`), generic contribution
+accessors, full lifecycle teardown, and three reference example plugins —
+see `docs/core/kernel.md`, `docs/examples.md`, and the plugin files themselves
+for full details. Summary:
+
+- **TASK_0032** — `src/core/complete.ts`: `bh.complete(req)`, a one-shot LLM
+  call side-channel detached from any conversation (zero event-bus activity,
+  full model-resolution reuse, abort-signal support, synthetic message mutation
+  guards, synthetic-message `append()` / `setContent()` rejection).
+- **TASK_0033** — `src/core/embed.ts`: `bh.embed(req)`, embedding side-channel
+  with a capability-guard pattern (throws if resolved driver lacks `embeddings`
+  capability), input normalization (string → array), single-string and
+  string-array arity support.
+- **TASK_0034** — `bh.getContributions<T>(key)` method added to `BHAI` class
+  in `src/core/bhai.ts`: generic multi-plugin accessor for registered capability
+  contributions (e.g. `bh.getContributions<Retriever>('retriever')`), returns
+  array in registration order, empty array for unregistered keys.
+- **TASK_0035** — `bh.dispose()` full teardown in `src/core/bhai.ts`:
+  abort all live conversations (waits for idle), fire `dispose` event (before
+  hooks per § 8.5), run plugin `dispose` hooks in reverse order, close every
+  MCP session (via new optional `McpClientLike.close?()` in
+  `src/core/mcp-integration.ts`, `Promise.allSettled`-based so one failure
+  doesn't block others), flip `disposed` flag that rejects post-dispose calls.
+  Bug fixes: `context` event patch now honors `appendSystemPrompt`, and both
+  `context` / `turn(start)` event payloads now include live `conversation`
+  reference.
+- **TASK_0036** — `examples/task-plugin.ts` (+ test): task-management plugin
+  demonstrating plugin authoring forms, event subscriptions, `context`
+  injection, and `turn(end)` veto.
+- **TASK_0037** — `examples/memory-plugin.ts` (+ test): agent-memory plugin
+  showing lifecycle hooks, `bh.complete()` for fact extraction, start-time
+  memory recall with injection-defense sentence.
+- **TASK_0038** — `examples/rag-plugin.ts` (+ test): RAG plugin (single
+  capability-object plugin) demonstrating both retrieval shapes from § 11.8 —
+  Shape 1: an agentic `search_knowledge` tool the model calls on demand; Shape 2:
+  automatic `context`-time injection on every user turn, sorted by score and
+  truncated to `topK` — both sourced from `bh.getContributions<Retriever>('retriever')`,
+  with a `configSchema` (`embeddingModel`, `topK`).
+
+99 new tests added: 68 across `src/core/{complete,embed,contributions,dispose}.test.ts`,
+19 across `examples/{task,memory,rag}-plugin.test.ts`, and 12 added to the
+pre-existing `src/conversation/agent-loop.test.ts` (the two prerequisite kernel
+fixes — layer-4 `appendSystemPrompt` support and the `context`/`turn(start)`
+`conversation` field) (494 → 593). All four gates (`typecheck`/`lint`/`test`/`build`)
+green.
 
 ## Recently completed (TASK_0010–TASK_0012)
 

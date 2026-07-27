@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta
+    name="description"
+    content="bhai · local — run WebLLM-powered models directly in your browser"
+  />
+  <title>bhai · local — WebLLM chat</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap"
+  />
+
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <span class="wordmark">bhai · local</span>
+    <select id="model-select" class="model-select">
+      <option value="">Loading models…</option>
+    </select>
+    <div class="status">
+      <span id="status-dot" class="status-dot" data-state="cold"></span>
+      <span id="status-label" class="status-label">cold</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="conversation" id="conversation" aria-live="polite">
+      <div class="empty-state" id="empty-state">
+        No model loaded. Pick a model and send a message to warm it up.
+      </div>
+    </section>
+    <aside class="telemetry" id="telemetry">
+      <!-- cold-start panel + decode/prefill/ttft/tokens/context readouts -->
+    </aside>
+  </main>
+
+  <footer class="composer">
+    <textarea
+      id="composer-input"
+      placeholder="Message the local model…"
+      rows="2"
+    ></textarea>
+    <button id="composer-send">Send</button>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -15,6 +15,7 @@ Cross-cutting TypeScript type declarations shared across the kernel, plugins, an
 - `tool.ts` — `BHAIToolDefinition`, `ToolInvocation`, `ToolExecute`, `ToolFilter`, `Icon`, `ToolAnnotations`, opaque `BHAIConversation` placeholder (§ 9.1). Added by TASK_0008 on TASK_0002's behalf — see the file-header coordination note.
 - `command.ts` — `BHAICommandDefinition`, `BHAICommandContext` (§ 6). Added by TASK_0010 on TASK_0002's behalf — see the file-header coordination note.
 - `mcp.ts` — `McpServerConfig` (§ 6 line 215, § 9.3). Added by TASK_0011 on TASK_0002's behalf — see the file-header coordination note.
+- `storage.ts` — `ConversationStore`, `MemoryStore`, `SkillResolver` (§ 11.4) plus supporting shapes `ConversationSummary`, `MemoryRecord`, `SkillInfo`. Added by TASK_0029 — no concrete implementations ship in v1, only interfaces + kernel wiring.
 - `types.test.ts` — pure compile-time type-assertion tests (`expectTypeOf` + `@ts-expect-error`) so `tsc --noEmit` fails if shapes drift from the spec.
 
 ## Conventions

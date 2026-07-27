@@ -197,6 +197,21 @@ describe("plugin attribution", () => {
 		expect(toolNames(bh)).toEqual([])
 	})
 
+	it("attributes tools declared via the capability-object `tools:` key", async () => {
+		// TASK_0040 (issue #6) made `init()` register `capabilities.tools`. That
+		// path bypasses both `setup()` and the `initialize` hook, so it needs its
+		// own attribution scope — otherwise `tools:` would be the one registration
+		// form producing permanently ungatable tools.
+		const bh = new BHAI()
+		bh.use({ name: "declarative", tools: [tool("declared_tool")] })
+		await bh.init()
+		expect(bh.listPlugins()[0].contributions.tools).toEqual(["declared_tool"])
+		bh.disablePlugin("declarative")
+		expect(toolNames(bh)).toEqual([])
+		bh.enablePlugin("declarative")
+		expect(toolNames(bh)).toEqual(["declared_tool"])
+	})
+
 	it("attributes MCP servers and their discovered tools to the declaring plugin", async () => {
 		const bh = new BHAI()
 		bh.registerMcpClientFactory(mockFactory)

@@ -54,27 +54,46 @@ export interface MLCEngineInstance {
 				messages: unknown[]
 				tools?: unknown[]
 				stream: true
+				stream_options?: { include_usage?: boolean }
 				temperature?: number
 				max_tokens?: number
 				stop?: string[]
-			}): AsyncIterable<{
-				choices: Array<{
-					delta: {
-						content?: string
-						tool_calls?: Array<{
-							id: string
-							function: { name: string; arguments: string }
+			}):
+				| AsyncIterable<{
+						choices: Array<{
+							delta: {
+								content?: string
+								tool_calls?: Array<{
+									id: string
+									function: { name: string; arguments: string }
+								}>
+							}
+							finish_reason?: "stop" | "tool_calls" | "length" | null
 						}>
-					}
-					finish_reason?: "stop" | "tool_calls" | "length" | null
-				}>
-				usage?: { prompt_tokens: number; completion_tokens: number }
-			}>
+						usage?: { prompt_tokens: number; completion_tokens: number }
+				  }>
+				| Promise<
+						AsyncIterable<{
+							choices: Array<{
+								delta: {
+									content?: string
+									tool_calls?: Array<{
+										id: string
+										function: { name: string; arguments: string }
+									}>
+								}
+								finish_reason?: "stop" | "tool_calls" | "length" | null
+							}>
+							usage?: { prompt_tokens: number; completion_tokens: number }
+						}>
+				  >
 		}
 	}
 	reload?(modelId: string): Promise<void>
 	setInitProgressCallback?(cb: (report: { progress: number; text: string }) => void): void
 	getAppConfig?(): AppConfig
+	/** Signal an in-flight streaming generation to stop (used on abort). */
+	interruptGenerate?(): void
 }
 
 /**
@@ -230,6 +249,21 @@ export class WebLLM implements BHAIDriver {
 	}
 
 	/**
+	 * Normalize an incoming model reference to the bare MLC `model_id` the
+	 * engine and app-config entries use. Accepts both the qualified
+	 * `"webllm/<model_id>"` form (as passed by the agent loop, which always
+	 * qualifies `ChatRequest.model` and the `capabilities()` argument with the
+	 * driver id) and the bare `<model_id>` form (as used directly in this
+	 * plugin's own unit tests and by any caller that already has the bare id).
+	 * Strips exactly one leading `"webllm/"` prefix (this driver's own id +
+	 * separator) if present; otherwise returns the input unchanged.
+	 */
+	private normalizeModelId(model: string): string {
+		const prefix = `${this.id}/`
+		return model.startsWith(prefix) ? model.slice(prefix.length) : model
+	}
+
+	/**
 	 * Per-model capability flags. `toolCalls` is derived from the app-config
 	 * entry's `overrides.toolCalls` field (MLC's app config does not carry a
 	 * first-class "supports tool calling" flag today), defaulting to `false`
@@ -239,9 +273,14 @@ export class WebLLM implements BHAIDriver {
 	 * bundled WebLLM model in scope is documented as a reasoning model).
 	 * `embeddings` is `false` — this driver does not implement `embed()`.
 	 * `contextWindow` is read from `overrides.context_window_size` if present.
+	 *
+	 * `model` accepts both the bare `model_id` (used directly in unit tests and
+	 * by callers with unqualified ids) and the qualified `"webllm/<model_id>"`
+	 * form (as passed by the agent loop); both resolve to the same model.
 	 */
 	capabilities(model: string): DriverCapabilities {
-		const entry = this.findModelEntry(model)
+		const normalized = this.normalizeModelId(model)
+		const entry = this.findModelEntry(normalized)
 		const overrides = entry?.overrides ?? {}
 		return {
 			streaming: true,
@@ -253,6 +292,21 @@ export class WebLLM implements BHAIDriver {
 					? overrides.context_window_size
 					: undefined,
 		}
+	}
+
+	/**
+	 * Remove reasoning-model chain-of-thought from a piece of assistant text.
+	 *
+	 * Strips complete `<think>...</think>` blocks (with any trailing whitespace)
+	 * and a final unterminated `<think>...` remainder, leaving only the answer.
+	 * Used to sanitize prior-turn assistant messages before they are re-sent as
+	 * conversation history (see the mapping in {@link chat}).
+	 *
+	 * @param text The raw assistant text, possibly containing `<think>` tags.
+	 * @returns The text with reasoning removed.
+	 */
+	private stripReasoning(text: string): string {
+		return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").replace(/<think>[\s\S]*$/, "")
 	}
 
 	/**
@@ -277,12 +331,23 @@ export class WebLLM implements BHAIDriver {
 
 		// Step 2: map BHAIMessage[] into the engine's OpenAI-style messages.
 		const messages = request.messages.map((m) => {
-			const base: Record<string, unknown> = { role: m.role, content: m.content }
+			let content: unknown = m.content
+			// Reasoning models (e.g. Qwen3, DeepSeek-R1) stream their chain-of-thought
+			// wrapped in `<think>...</think>` as ordinary text, which the loop stores
+			// verbatim in the assistant message. That reasoning is ephemeral: feeding
+			// it back as conversation history confuses reasoning models — a common
+			// symptom is the model emitting an EMPTY next turn. So strip reasoning from
+			// historical assistant messages before sending them to the engine, keeping
+			// only the final answer (matching the official reasoning-model chat
+			// templates, which drop prior-turn thinking).
+			if (m.role === "assistant" && typeof content === "string") {
+				content = this.stripReasoning(content)
+			}
 			// MVP simplification: multi-block ContentBlock[] content collapses to
 			// the message's `content` string field, since WebLLM's OpenAI-
 			// compatible surface expects string content per message in the
 			// common case.
-			return base
+			return { role: m.role, content }
 		})
 		if (request.systemPrompt) {
 			messages.unshift({ role: "system", content: request.systemPrompt })
@@ -308,12 +373,15 @@ export class WebLLM implements BHAIDriver {
 			messages: unknown[]
 			tools?: unknown[]
 			stream: true
+			stream_options?: { include_usage?: boolean }
 			temperature?: number
 			max_tokens?: number
 			stop?: string[]
 		} = {
 			messages,
 			stream: true,
+			// Ask MLC to emit a final usage chunk so token counts are reported.
+			stream_options: { include_usage: true },
 		}
 		if (tools) params.tools = tools
 		if (request.params?.temperature !== undefined) params.temperature = request.params.temperature
@@ -324,30 +392,55 @@ export class WebLLM implements BHAIDriver {
 		// engine exceptions propagate uncaught so TASK_0018's wrapper can
 		// classify and retry them (§ 10.1: "Drivers stay simple: throw or
 		// emit done: { stopReason: 'error' }").
-		const stream = this.engine.chat.completions.create(params)
+		// The real MLC engine returns a Promise<AsyncIterable> when `stream: true`
+		// (OpenAI-compatible surface), so this must be awaited before iterating.
+		// `await` is a no-op for a directly-returned async iterable, so both the
+		// real engine and synchronous test fakes work.
+		const stream = await this.engine.chat.completions.create(params)
+
+		// CRITICAL — DRAIN TO COMPLETION: MLC's streaming generator releases its
+		// per-model lock as a trailing statement AFTER its internal yield loop,
+		// not inside a `finally`. If we `break`/`return` early (which triggers the
+		// generator's `.return()`), that release is skipped and the lock is never
+		// freed — so the NEXT turn's `chat.completions.create` (which awaits the
+		// same lock) HANGS forever. To avoid that we never bail out mid-stream:
+		// once a terminal condition is reached we record it in `terminal`, stop
+		// emitting further events, and keep pulling chunks until the stream ends
+		// naturally (letting MLC run its release), then emit the terminal event.
+		let terminal: DriverEvent | undefined
 		for await (const chunk of stream) {
-			// Abort check: if the signal fired, stop and yield abort.
-			if (request.signal.aborted) {
-				yield { type: "done", stopReason: "abort" }
-				return
+			// Abort: record the terminal event and ask MLC to stop generating (its
+			// generator then finishes promptly and releases the lock as we drain).
+			if (request.signal.aborted && !terminal) {
+				terminal = { type: "done", stopReason: "abort" }
+				this.engine.interruptGenerate?.()
 			}
+			// Always surface usage — MLC sends the usage chunk after the
+			// finish_reason chunk (when enabled), i.e. once `terminal` is already set.
+			if (chunk.usage) {
+				yield {
+					type: "usage",
+					inputTokens: chunk.usage.prompt_tokens,
+					outputTokens: chunk.usage.completion_tokens,
+				}
+			}
+			// Past a terminal condition: keep draining but emit nothing else.
+			if (terminal) continue
+
 			const choice = chunk.choices[0]
 			if (!choice) continue
 			if (choice.delta.content) {
 				yield { type: "delta", text: choice.delta.content }
 			}
 			if (choice.delta.tool_calls) {
+				let parseError: unknown
 				for (const call of choice.delta.tool_calls) {
 					let input: unknown
 					try {
 						input = JSON.parse(call.function.arguments)
 					} catch (err) {
-						yield {
-							type: "done",
-							stopReason: "error",
-							error: err,
-						}
-						return
+						parseError = err
+						break
 					}
 					yield {
 						type: "tool-call",
@@ -356,26 +449,18 @@ export class WebLLM implements BHAIDriver {
 						input,
 					}
 				}
-			}
-			if (chunk.usage) {
-				yield {
-					type: "usage",
-					inputTokens: chunk.usage.prompt_tokens,
-					outputTokens: chunk.usage.completion_tokens,
+				if (parseError !== undefined) {
+					terminal = { type: "done", stopReason: "error", error: parseError }
+					continue
 				}
 			}
 			if (choice.finish_reason) {
-				yield {
-					type: "done",
-					stopReason: this.mapFinishReason(choice.finish_reason),
-				}
-				return
+				terminal = { type: "done", stopReason: this.mapFinishReason(choice.finish_reason) }
 			}
 		}
-		// Stream ended without an explicit finish_reason — yield a default
-		// stop. (MLC normally emits a finish_reason; this is a defensive
-		// fallback.)
-		yield { type: "done", stopReason: "stop" }
+		// Emit the terminal event once the stream has fully drained. If MLC ended
+		// without an explicit finish_reason, fall back to a plain stop.
+		yield terminal ?? { type: "done", stopReason: "stop" }
 	}
 
 	/**
@@ -404,19 +489,31 @@ export class WebLLM implements BHAIDriver {
 	 * one. Pre-warmed-instance form: assumes the host already loaded the right
 	 * model, but reloads only if `request.model` differs from what was last
 	 * loaded through this driver instance.
+	 *
+	 * `modelId` accepts both the bare `model_id` (used directly in unit tests and
+	 * by callers with unqualified ids) and the qualified `"webllm/<model_id>"`
+	 * form (as passed by the agent loop); both resolve to the same model. Tracking
+	 * (`loadedModelId`) uses the normalized form, so repeated calls with either
+	 * qualified or bare form for the same underlying model are recognized as
+	 * "already loaded" and do not re-trigger `reload`.
 	 */
 	private async ensureModelLoaded(modelId: string): Promise<void> {
-		if (this.loadedModelId === modelId) return
+		const normalized = this.normalizeModelId(modelId)
+		if (this.loadedModelId === normalized) return
 		if (this.engine.reload) {
-			await this.engine.reload(modelId)
+			await this.engine.reload(normalized)
 		}
-		this.loadedModelId = modelId
+		this.loadedModelId = normalized
 	}
 
-	/** Look up an app-config entry by model id. */
+	/**
+	 * Look up an app-config entry by model id. Accepts both the bare `model_id`
+	 * and the qualified `"webllm/<model_id>"` form; both resolve to the same entry.
+	 */
 	private findModelEntry(modelId: string): AppConfig["model_list"][number] | undefined {
+		const normalized = this.normalizeModelId(modelId)
 		const config = this.appConfig ?? this.engine.getAppConfig?.()
 		if (!config) return undefined
-		return config.model_list.find((e) => e.model_id === modelId)
+		return config.model_list.find((e) => e.model_id === normalized)
 	}
 }

@@ -265,8 +265,12 @@ export class EventBus {
 		if (event === "compact") {
 			// § 8.4 documented exception: `compact` is a legal manual trigger the
 			// kernel intercepts to start the compaction pipeline (`source: 'emit'`).
-			// TODO(TASK_0031): intercept and route into the compaction pipeline;
-			// for now this just passes through as a normal dispatch.
+			// The real interception (TASK_0031) lives in BHAIConversationImpl.emit(),
+			// not here, because EventBus must remain scope-agnostic — it is reused as both
+			// the framework bus (which has no compaction context) and the per-conversation bus.
+			// Hardcoding conversation/compaction logic into EventBus would break that contract.
+			// Instead, conversation.emit('compact') routes through to runCompactionPipeline()
+			// at the scope where it makes sense.
 			return
 		}
 		if (RESERVED_EXACT.has(event)) {
