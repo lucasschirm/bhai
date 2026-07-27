@@ -541,3 +541,79 @@ Later tasks should import `BHAIConversation` from the appropriate barrel, never 
 - All 480 tests pass (470 prior + 10 new steering tests)
 - Linted and formatted to Biome standards (no noExplicitAny, organizeImports, format issues)
 - Updated `AGENTS.md` with TASK_0030 documentation, integration points, and entry requirements
+
+### Open message-field contract & `parseThink`
+
+Adds the plugin-facing message extension contract and framework-side `<think>`
+parsing, replacing the parser the WebLLM example used to ship itself.
+
+**New files**
+
+- `src/core/message-fields.ts` — `MessageFieldRegistry`, `MessageFieldDefinition`,
+  `ResolvedMessageField`, `applyMessageFields()`. A field is a **non-enumerable**
+  accessor over one key in `message.meta`. Non-enumerability is load-bearing: it
+  keeps fields out of `Object.keys`, `JSON.stringify`, and object spread, so
+  `toPlainMessage()` keeps emitting exactly the declared wire fields while the
+  value rides along inside `meta`, which already round-trips.
+- `src/conversation/message.ts` — `createMessage()`, the canonical factory, plus
+  `withMessageFields()` for copy-with-patch.
+- `src/conversation/think-stream.ts` — `createThinkSplitter()`, moved here from
+  `example/src/lib/think-stream.js` and ported to TypeScript. Behavior unchanged,
+  including its three regression guards.
+
+**Message construction consolidated**
+
+All four former construction sites now delegate to `createMessage()`:
+`constructMessage` (agent-loop), `initToMessage` (system-prompt), the compaction
+summary literal, and `createMessageFromPlain` (snapshot). This also fixed two
+pre-existing divergences between them:
+
+- `append()` now targets the message's *last* block when it is text, otherwise
+  pushing a new text block. The agent-loop factory previously appended to the
+  last *text* block anywhere in the array, reordering output when a non-text
+  block trailed it.
+- `setContent()` now honors its declared `string | ContentBlock[]` signature
+  everywhere; `initToMessage`'s copy was string-only.
+
+Immutable messages (compaction summaries, snapshot-restored) keep their existing
+throw behavior via `{ mutable: false }` and, for compaction, a custom
+`frozenReason`. Snapshot restore passes `content` and `blocks` explicitly so
+neither view is re-derived from the other.
+
+**The spread trap**
+
+`agent-loop.ts` applies a `message(before)` handler's patch by copying the user
+message. A bare spread drops non-enumerable accessors, which would silently
+strip every plugin field from the message that lands in history — so both the
+patched path and the blocked path now go through `withMessageFields()`.
+
+**`parseThink`**
+
+`CreateConversationOptions.parseThink` (default `false`). When on, `sendMessage`
+allocates one splitter per assistant turn and routes each `delta`: tag content
+onto `message.think` dispatched as `kind: 'reasoning'`, everything else through
+`append()` dispatched as `kind: 'text'`. Empty deltas are not dispatched. The
+native `reasoning-delta` branch is untouched and still populates
+`meta.reasoning`. With the flag off the branch is byte-for-byte the prior
+behavior.
+
+The `think` field is registered in the `BHAI` constructor rather than gated on
+the option, because fields are installed at construction time — long before a
+conversation exists — and because `message.think` must keep reading a persisted
+`meta.think` on a conversation reloaded from a snapshot.
+
+**Type-level extension**
+
+`BHAIMessageExtensions` in `src/types/message.ts` is the augmentation target;
+`BHAIMessage` extends it. Augmenting `"@lucasschirm/bhai"` merges even though
+`dist/index.d.ts` re-exports the interface from a bundled chunk — TypeScript
+follows the re-export alias to the original declaration (verified against a real
+consumer compile). In-repo code cannot use that specifier, since it only
+resolves once `dist/` is built, so `src/types/message-augmentation.test.ts`
+augments the declaring module directly.
+
+**Tests** — `src/core/message-fields.test.ts` (12), `src/conversation/message.test.ts`
+(16), `src/conversation/parse-think.test.ts` (11), `src/types/message-augmentation.test.ts`
+(2), plus `src/conversation/think-stream.test.ts` (11) migrated intact.
+
+Updated `AGENTS.md` with this task's documentation and integration points.

@@ -188,6 +188,10 @@ export function beginAssistantTurn() {
 
 /**
  * Append a thought delta to a message.
+ *
+ * Self-revealing: the collapsed `<details>` region is created on the first delta
+ * and shown by CSS, so callers do not have to reveal it separately.
+ *
  * @param {string} turnHandle - message ID from beginAssistantTurn()
  * @param {string} delta - thought text
  */
@@ -199,6 +203,7 @@ export function appendThoughtDelta(turnHandle, delta) {
 	if (!thoughtEl) {
 		thoughtEl = document.createElement("details")
 		thoughtEl.className = "message-thought"
+		thoughtEl.open = false // Collapsed by default; the user can toggle it open.
 		thoughtEl.innerHTML = `
       <summary>Thought</summary>
       <div class="message-thought-content"></div>
@@ -241,21 +246,6 @@ export function appendAnswerDelta(turnHandle, delta) {
 	const conversation = document.getElementById("conversation")
 	if (conversation) {
 		conversation.scrollTop = conversation.scrollHeight
-	}
-}
-
-/**
- * Reveal the thought region once content exists for this turn.
- * @param {string} turnHandle - message ID from beginAssistantTurn()
- */
-export function revealThoughtRegion(turnHandle) {
-	const messageEl = document.getElementById(turnHandle)
-	if (!messageEl) return
-
-	const thoughtEl = messageEl.querySelector(".message-thought")
-	if (thoughtEl) {
-		thoughtEl.style.display = "block"
-		thoughtEl.open = false // Allow user to toggle, default closed
 	}
 }
 

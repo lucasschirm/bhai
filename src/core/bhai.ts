@@ -60,6 +60,7 @@ import {
 	resolveGetMcpsHooks,
 	resolveModelSourceHooks,
 } from "./mcp-integration.js"
+import { type MessageFieldDefinition, MessageFieldRegistry } from "./message-fields.js"
 import {
 	type ConversationsAccessor,
 	createConversationsAccessor,
@@ -452,6 +453,15 @@ export class BHAI {
 	private readonly eventHandlerCounts: Map<string, number> = new Map()
 
 	/**
+	 * Plugin-declared message fields — the open message contract. Backs
+	 * {@link defineMessageField} and is read by the conversation layer's message
+	 * factory, which installs one accessor per registered field on every
+	 * message it builds. Seeded in the constructor with the built-in `think`
+	 * field (see {@link CreateConversationOptions.parseThink}).
+	 */
+	private readonly messageFields: MessageFieldRegistry = new MessageFieldRegistry()
+
+	/**
 	 * `modelSource` hook results, kept per contributing plugin rather than as one
 	 * flat list so a deactivated plugin's models can drop out of `listModels()`.
 	 * `owner` is `undefined` for a hook whose plugin could not be determined.
@@ -515,6 +525,12 @@ export class BHAI {
 		)
 		this.driverRegistry.setActivePredicate((id) => this.isOwnerActive(this.driverOwners.get(id)))
 		this.bus.setOwnerActivePredicate((owner) => this.isOwnerActive(owner))
+		// The built-in `think` field. Registered unconditionally (not gated on
+		// `parseThink`) because message fields are installed at construction
+		// time, long before any conversation and its options exist — and because
+		// `message.think` must keep reading a persisted `meta.think` on a
+		// conversation reloaded from a snapshot, whatever this run's options say.
+		this.messageFields.define("think")
 		// Seed host-supplied config values from the constructor option. Each
 		// entry is equivalent to a pre-init `setConfig(pluginName, values)`
 		// call — last-write-wins per top-level key is irrelevant here since
@@ -1176,6 +1192,63 @@ export class BHAI {
 	 */
 	listCommands(): Array<{ name: string; def: BHAICommandDefinition }> {
 		return this.commandRegistry.listCommands()
+	}
+
+	/**
+	 * Declare a message field — the open message contract.
+	 *
+	 * Installs a named accessor on every {@link BHAIMessage} this instance
+	 * builds. The accessor reads and writes a single key inside the message's
+	 * `meta` bag, so a plugin gets `message.myField` ergonomics while the value
+	 * is stored (and persisted) through the existing `meta` channel that already
+	 * round-trips via `toPlainMessage`/`fromSnapshot`.
+	 *
+	 * Accessors are non-enumerable, so they never leak into `JSON.stringify` or
+	 * a conversation snapshot's wire shape.
+	 *
+	 * Pair this with a type-level declaration so the field typechecks:
+	 *
+	 * ```ts
+	 * declare module "@lucasschirm/bhai" {
+	 *   interface BHAIMessageExtensions {
+	 *     sentiment?: "positive" | "negative"
+	 *   }
+	 * }
+	 *
+	 * bh.defineMessageField("sentiment")
+	 * ```
+	 *
+	 * Call it from a plugin's `setup()` or `initialize` hook. Fields registered
+	 * after messages already exist do not retroactively appear on them.
+	 *
+	 * NOT SUBJECT TO PLUGIN ACTIVATION (the one registration path that isn't —
+	 * deliberate, not an oversight). A message field is a *data-shape* contract,
+	 * not a behavior: the accessor only exposes a key that already lives in
+	 * `meta` and already round-trips through snapshots. Dropping the accessor
+	 * when its plugin is disabled would make `message.myField` read `undefined`
+	 * on messages whose `meta.myField` is populated — silently changing how
+	 * already-persisted conversations deserialize, and breaking re-enabling as a
+	 * pure no-op. This is the same reasoning that registers the built-in `think`
+	 * field unconditionally (see the constructor). Gate the plugin's *handlers*
+	 * instead; the field stays.
+	 *
+	 * @param name       Property name to expose on every message.
+	 * @param definition Backing `meta` key and default-value overrides.
+	 * @throws Error on a reserved name (`content`, `meta`, `append`, …) or a
+	 *         duplicate registration.
+	 */
+	defineMessageField(name: string, definition?: MessageFieldDefinition): void {
+		this.assertNotDisposed()
+		this.messageFields.define(name, definition)
+	}
+
+	/**
+	 * The message-field registry, for the conversation layer's message factory.
+	 *
+	 * @internal
+	 */
+	_getMessageFields(): MessageFieldRegistry {
+		return this.messageFields
 	}
 
 	/**

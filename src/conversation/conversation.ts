@@ -55,6 +55,30 @@ export interface CreateConversationOptions {
 	 */
 	retryPolicy?: import("../core/retry.js").RetryPolicy
 	/**
+	 * Extract `<think>...</think>` sections out of the model's own text stream.
+	 *
+	 * Some reasoning models have no structured reasoning channel and instead emit
+	 * their chain of thought inline, wrapped in `<think>` tags, mixed into the
+	 * ordinary text stream. With this enabled the agent loop splits that stream as
+	 * it arrives:
+	 *
+	 * - text inside the tags accumulates on `message.think` and is dispatched as
+	 *   `message.delta` with `kind: 'reasoning'`;
+	 * - text outside the tags becomes the message body as usual and is dispatched
+	 *   with `kind: 'text'`.
+	 *
+	 * Tags split across chunk boundaries are handled. Consumers therefore see the
+	 * same two-channel shape they would get from a driver with a native
+	 * `reasoning-delta` channel, and `message.content` never contains `<think>`
+	 * markup.
+	 *
+	 * Defaults to `false`, in which case `<think>` tags pass through into the
+	 * message body untouched. A driver's native `reasoning-delta` events are
+	 * unaffected either way — those keep populating `meta.reasoning`.
+	 */
+	parseThink?: boolean
+
+	/**
 	 * Auto-compaction configuration (TASK_0031). When set, enables automatic
 	 * context-window compaction based on driver-reported window size and usage.
 	 * - `auto`: true to enable auto-compaction.

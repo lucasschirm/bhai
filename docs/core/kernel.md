@@ -24,6 +24,8 @@ ARCHITECTURE.md § 6.
 5. **Tool registry** wiring (TASK_0008): `addTool`/`removeTool`/`listTools`.
 6. **Driver registry** wiring (TASK_0009): `addDriver`/`listModels`.
 7. **Command registry** wiring (TASK_0010): `addCommand`/`listCommands`.
+8. **Message-field registry**: `defineMessageField` — the open message
+   contract (plugin-declared accessors over `message.meta`).
 
 8. **Conversation lifecycle** (TASK_0023, TASK_0028): `createConversation`/
    `loadConversation` — see `docs/core/conversation.md` for the full
@@ -165,6 +167,28 @@ defaults to `''`).
 
 See `drivers.md`. `listModels()` merges catalogues from every registered
 driver in parallel.
+
+### Messages: `defineMessageField`
+
+`defineMessageField(name, { metaKey?, default? })` declares a message field —
+the open message contract. It installs a **non-enumerable** accessor on every
+`BHAIMessage` the kernel builds, reading and writing one key inside the
+message's `meta` bag. Plugins get `message.myField` ergonomics while the value
+persists through `meta`, which already round-trips via
+`toPlainMessage`/`fromSnapshot`; non-enumerability keeps the accessor out of
+`JSON.stringify` and the snapshot wire shape.
+
+Throws on a reserved name (`id`, `role`, `content`, `blocks`, `time`, `meta`,
+`append`, `setContent`), on a duplicate registration, and after `dispose()`.
+Call it from a plugin's `setup()` or `initialize` hook — fields registered after
+a message exists do not retroactively appear on it.
+
+Pair it with a module augmentation of `BHAIMessageExtensions` (see
+`types.md`) so the field typechecks. Core registers one field itself, `think`,
+which `CreateConversationOptions.parseThink` populates.
+
+See `message-fields.ts` for the registry and `conversation/message.ts` for the
+factory that applies it.
 
 ### Commands: `addCommand` / `listCommands`
 

@@ -3,7 +3,7 @@
 ## Purpose & scope
 
 A vanilla JavaScript (no framework, no TypeScript) browser example demonstrating BHAI's core capabilities:
-streaming responses, in-browser model execution via WebLLM, live telemetry (decode/prefill tokens per second, time-to-first-token, context usage), and client-side parsing of reasoning blocks (`<think>...</think>` regions).
+streaming responses, in-browser model execution via WebLLM, live telemetry (decode/prefill tokens per second, time-to-first-token, context usage), and framework-side parsing of reasoning blocks (`<think>...</think>` regions, via `parseThink: true`).
 
 Consumes the WORKSPACE-LINKED, BUILT `dist/` output of `@lucasschirm/bhai` (via `workspace:*` dependency + `pnpm run build` running first), never source imports (`../../src/*.ts`). This ensures the example exercises the real published subpath exports and tree-shaking behavior.
 
@@ -35,12 +35,10 @@ Phase 1 (scaffolding + browser wiring): complete. Pure-lib phase complete (concu
   - `beginAssistantTurn()` — create new assistant message DOM node, return handle.
   - `appendThoughtDelta(turnHandle, delta)` — stream thought content (with `<details>` collapsible region).
   - `appendAnswerDelta(turnHandle, delta)` — stream answer text.
-  - `revealThoughtRegion(turnHandle)` — make thought `<details>` visible once content exists.
   - `appendUserMessage(text)` — add user message bubble.
   - `updateTelemetry({ prefillTps, decodeTps, ttft, inputTokens, outputTokens, contextWindow, contextUsagePercent, decodeColor, decodeRatio })` — render live stats panel with thermal-colored decode gauge + context bar.
   - `setComposerState(state)` — toggle textarea/button disabled, label Send↔Stop.
   - `clearEmptyState()` — remove intro placeholder.
-- **`src/lib/think-stream.js`** — (concurrent: other agent) Stateful parser for `<think>...</think>` blocks. Yields thought/answer deltas as text streams in.
 - **`src/lib/stats.js`** — (concurrent: other agent) Parses `engine.runtimeStatsText()` output → `{ prefillTps, decodeTps }`.
 - **`src/lib/thermal.js`** — (concurrent: other agent) `thermalRatio(decodeTps)` → 0..1, `thermalColor(ratio)` → CSS color.
 - **`src/lib/format.js`** — (concurrent: other agent) `formatTps(n)`, `formatTokens(n)`, `formatBytes(n)`, `formatSeconds(n)` — string formatters for telemetry display.

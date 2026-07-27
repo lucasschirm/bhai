@@ -33,10 +33,30 @@ package barrel, which re-exports this file).
 
 ### `message.ts` (TASK_0002)
 
+- `BHAIMessageExtensions` — the open extension point of the message
+  contract. Plugins declare a field at runtime with
+  `bh.defineMessageField(name)` (a non-enumerable accessor over
+  `message.meta`) and declare its type here by module augmentation:
+
+  ```ts
+  declare module "@lucasschirm/bhai" {
+    interface BHAIMessageExtensions {
+      sentiment?: "positive" | "negative"
+    }
+  }
+  ```
+
+  Augmenting the package specifier merges even though `dist/index.d.ts`
+  re-exports the interface from a bundled chunk — TypeScript follows the
+  re-export alias to the original declaration. Every member must be
+  optional, since a message only carries a field once the owning plugin
+  has registered it. Core ships one member, `think?: string`, backing
+  `CreateConversationOptions.parseThink`.
 - `BHAIMessage` — `{ id, role, content, blocks, time, meta, append(text),
   setContent(content) }` (§ 11.1). The full conversation interface is
   TASK_0023's; this task supplies only the message shape and the
-  standalone `ConversationStatus` union.
+  standalone `ConversationStatus` union. Extends
+  `BHAIMessageExtensions`.
 - `ConversationStatus` — `'idle' | 'streaming' | 'waiting-tool' |
   'compacting' | 'aborted' | 'error'`.
 
