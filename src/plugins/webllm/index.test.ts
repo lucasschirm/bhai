@@ -254,6 +254,95 @@ describe("WebLLM — chat", () => {
 		])
 	})
 
+	it("awaits a Promise-returning create() (real MLC engine shape)", async () => {
+		// The real @mlc-ai/web-llm engine returns a Promise<AsyncIterable> from
+		// `chat.completions.create({ stream: true })`, unlike the direct async
+		// generator the other fakes use. This locks in the `await` in chat().
+		const chunks = [
+			{ choices: [{ delta: { content: "Hi" } }] },
+			{ choices: [{ delta: { content: " there" }, finish_reason: "stop" as const }] },
+		]
+		async function* gen() {
+			for (const c of chunks) yield c
+		}
+		const engine = {
+			// `create` is an async function → calling it yields a Promise<AsyncIterable>.
+			chat: { completions: { create: async () => gen() } },
+			reload: async () => {},
+			getAppConfig: () => ({
+				model_list: [{ model_id: "test-model", model: "M", model_lib: "l" }],
+			}),
+		} as unknown as MLCEngineInstance
+		const driver = new WebLLM({ engine })
+		const events = await drain(driver.chat(makeRequest()))
+		expect(events).toEqual([
+			{ type: "delta", text: "Hi" },
+			{ type: "delta", text: " there" },
+			{ type: "done", stopReason: "stop" },
+		])
+	})
+
+	it("drains the stream to completion after finish_reason (so MLC releases its lock)", async () => {
+		// MLC releases its per-model lock in code that runs AFTER its final yield.
+		// The driver must keep pulling until the generator completes, or the lock
+		// is never freed and the next turn hangs. `completed` only flips true if
+		// the generator runs past its last yield.
+		let completed = false
+		async function* gen() {
+			yield { choices: [{ delta: { content: "A" } }] }
+			yield { choices: [{ delta: {}, finish_reason: "stop" as const }] }
+			// A trailing usage-only chunk after finish_reason (include_usage).
+			yield { choices: [], usage: { prompt_tokens: 5, completion_tokens: 3 } }
+			completed = true
+		}
+		const engine = {
+			chat: { completions: { create: async () => gen() } },
+			reload: async () => {},
+			getAppConfig: () => ({
+				model_list: [{ model_id: "test-model", model: "M", model_lib: "l" }],
+			}),
+		} as unknown as MLCEngineInstance
+		const driver = new WebLLM({ engine })
+		const events = await drain(driver.chat(makeRequest()))
+		expect(completed).toBe(true)
+		expect(events).toEqual([
+			{ type: "delta", text: "A" },
+			{ type: "usage", inputTokens: 5, outputTokens: 3 },
+			{ type: "done", stopReason: "stop" },
+		])
+	})
+
+	it("strips <think> reasoning from historical assistant messages before sending", async () => {
+		const engine = fakeEngine()
+		const driver = new WebLLM({ engine })
+		await drain(
+			driver.chat(
+				makeRequest({
+					messages: [
+						{ role: "user", content: "hi" },
+						{
+							role: "assistant",
+							content: "<think>lots of reasoning</think>\n\nThe final answer",
+						},
+						{ role: "user", content: "again" },
+						// An unterminated think block (truncated turn) is stripped entirely.
+						{ role: "assistant", content: "<think>still going" },
+						{ role: "user", content: "and again" },
+						// biome-ignore lint/suspicious/noExplicitAny: test message fixtures
+					] as any,
+				}),
+			),
+		)
+		const sentMessages = vi.mocked(engine.chat.completions.create).mock.calls[0][0].messages
+		expect(sentMessages).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "The final answer" },
+			{ role: "user", content: "again" },
+			{ role: "assistant", content: "" },
+			{ role: "user", content: "and again" },
+		])
+	})
+
 	it("translates tool_calls and maps finish_reason to tool-calls", async () => {
 		const engine = fakeEngine({
 			appConfig: {
@@ -474,5 +563,67 @@ describe("WebLLM — driver.progress events", () => {
 				},
 			},
 		])
+	})
+})
+
+describe("WebLLM — model ref normalization", () => {
+	it("calls engine.reload with bare model_id when given qualified ref", async () => {
+		const engine = fakeEngine()
+		const driver = new WebLLM({ engine })
+		await drain(driver.chat(makeRequest({ model: "webllm/test-model" })))
+		expect(engine.reload).toHaveBeenCalledWith("test-model")
+		expect(engine.reload).not.toHaveBeenCalledWith("webllm/test-model")
+	})
+
+	it("capabilities() returns same result for bare and qualified refs", () => {
+		const engine = fakeEngine({
+			appConfig: {
+				model_list: [
+					{
+						model_id: "test-model",
+						model: "Test Model",
+						model_lib: "test-lib",
+						overrides: { toolCalls: true, context_window_size: 4096 },
+					},
+				],
+			},
+		})
+		const driver = new WebLLM({ engine })
+		const capsBare = driver.capabilities("test-model")
+		const capsQualified = driver.capabilities("webllm/test-model")
+		expect(capsBare).toEqual(capsQualified)
+		expect(capsBare.toolCalls).toBe(true)
+		expect(capsBare.contextWindow).toBe(4096)
+	})
+
+	it("does not double-reload when called with different ref forms for same model", async () => {
+		const engine = fakeEngine()
+		const driver = new WebLLM({ engine })
+		// First call with bare model id
+		await drain(driver.chat(makeRequest({ model: "test-model" })))
+		expect(engine.reload).toHaveBeenCalledTimes(1)
+		// Second call with qualified model ref for the same model
+		await drain(driver.chat(makeRequest({ model: "webllm/test-model" })))
+		// Should not reload again since it's the same model (normalized)
+		expect(engine.reload).toHaveBeenCalledTimes(1)
+	})
+
+	it("still calls reload twice when switching models with mixed ref forms", async () => {
+		const engine = fakeEngine({
+			appConfig: {
+				model_list: [
+					{ model_id: "model-a", model: "A", model_lib: "la" },
+					{ model_id: "model-b", model: "B", model_lib: "lb" },
+				],
+			},
+		})
+		const driver = new WebLLM({ engine })
+		// First with qualified ref
+		await drain(driver.chat(makeRequest({ model: "webllm/model-a" })))
+		expect(engine.reload).toHaveBeenNthCalledWith(1, "model-a")
+		// Then with bare id for different model
+		await drain(driver.chat(makeRequest({ model: "model-b" })))
+		expect(engine.reload).toHaveBeenNthCalledWith(2, "model-b")
+		expect(engine.reload).toHaveBeenCalledTimes(2)
 	})
 })

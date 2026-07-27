@@ -16,6 +16,7 @@
 // (§ 9.1: a BHAI tool definition *is* an MCP `Tool` object plus a local
 // `execute` binding).
 
+import type { BHAIConversation as BHAIConversationReal } from "../conversation/conversation.js"
 import type { CallToolResult, ContentBlock, JSONSchema } from "./content.js"
 
 /**
@@ -49,17 +50,13 @@ export interface ToolAnnotations {
 }
 
 /**
- * Opaque placeholder for the `BHAIConversation` interface (§ 9.1
- * `ToolInvocation.conversation`).
+ * The real `BHAIConversation` interface (TASK_0023, ARCHITECTURE.md § 11.1).
  *
- * The real `BHAIConversation` interface is owned by TASK_0023 (§ 11.1) and has
- * not landed yet. Tool executors in this task never inspect the conversation,
- * so an opaque `unknown`-backed placeholder is sufficient and avoids a circular
- * type dependency on a not-yet-defined interface. TASK_0023 must replace this
- * alias with the real interface (or re-export it under that name) without
- * changing `ToolInvocation`'s field shape.
+ * Represents a single conversation instance — the primary object hosts and
+ * plugins interact with. The interface defines conversation lifecycle, event
+ * handling, and metadata management.
  */
-export type BHAIConversation = unknown
+export type BHAIConversation = BHAIConversationReal
 
 /**
  * The payload handed to a tool's `execute()` (§ 9.1).
@@ -71,7 +68,7 @@ export type BHAIConversation = unknown
  * `notifications/cancelled` for remote MCP tools (TASK_0011).
  */
 export interface ToolInvocation<P = unknown> {
-	conversation: BHAIConversation
+	conversation: BHAIConversation | undefined
 	params: P
 	toolCallId: string
 	signal: AbortSignal

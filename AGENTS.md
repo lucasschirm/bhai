@@ -8,12 +8,12 @@ implementation documentation (`docs/`). The parent directory holds only the
 v0.1 design proposal (`ARCHITECTURE.md`) and the task breakdown (`tasks/`) —
 all code lives here.
 
-## Current state (TASK_0001–TASK_0022 complete)
+## Current state (TASK_0001–TASK_0044 complete — v0.1 build finished)
 
-Phase 0 (foundations), Phase 1 (kernel core), Phase 2 (tool/driver/command
-registries + MCP client), and the first five tasks of Phase 3 (transport
-retry, WebLLM driver, Ollama driver, credential resolution, model selection)
-are implemented. See `docs/PROGRESS.md` for the full task status.
+All 6 phases are implemented: foundations, kernel core, tool/driver/command
+registries + MCP client, drivers & model selection, conversations & the agent
+loop, kernel utilities & reference examples, and interop/validation/docs. See
+`docs/PROGRESS.md` for the full task status.
 
 Implemented:
 
@@ -21,7 +21,8 @@ Implemented:
   `vitest.config.ts`, `biome.json`, `husky`) — ESM-only, three-tier subpath
   exports, native TC39 stage-3 decorators.
 - **Kernel** (`src/core/bhai.ts`) — `BHAI` class: `use()`, `on()`/`emit()`,
-  `init()`/`dispose()`, config contract, registry wiring.
+  `init()`/`dispose()`, config contract, registry wiring, `complete()` /
+  `embed()` side-channels, `getContributions()` accessor, full teardown.
 - **Event bus** (`src/core/event-bus.ts`) — sequential dispatch, patch
   chaining, blockable pipelines, reserved-namespace enforcement.
 - **Plugin system** (`src/core/decorators.ts`, `lifecycle.ts`, `config.ts`)
@@ -53,9 +54,37 @@ Implemented:
   with deferred application + `model.changed` event). Error types:
   `AmbiguousModelError`, `ModelNotFoundError`, `NoModelError`,
   `ModelUnavailableError`.
+- **Conversations & the agent loop** — see `docs/core/conversation.md` for
+  full detail. Summary: conversation surface, system-prompt layering, the
+  agent loop with tool execution, loop termination & guardrails, serialization,
+  storage interfaces, concurrent input steering, and compaction pipeline.
+- **Kernel side-channels** (`src/core/complete.ts`, `src/core/embed.ts`) —
+  `complete()` one-shot LLM calls and `embed()` embedding side-channel, both
+  with full model-resolution reuse and capability guarding.
+- **Reference example plugins** (`examples/`) — three fitness-test plugins
+  proving the kernel extension surface is complete: task-management plugin,
+  agent-memory plugin, and RAG plugin (both agentic and automatic shapes),
+  plus a runnable README quickstart example.
+- **Interop adapters** (`src/plugins/interop/`) — `runPiExtension()`
+  (`src/plugins/interop/pi/`) translates pi coding-agent extensions onto
+  BHAI kernel primitives; `runOpenCodePlugin()`
+  (`src/plugins/interop/opencode/`) maps OpenCode-style plugin hooks onto
+  the same primitives, including zod-like→JSON-Schema conversion and
+  `permission.ask` composing with the shared `tool(beforeCall)` approval
+  seam.
+- **Security audit** (`docs/security-review.md`) — verifies all 5
+  ARCHITECTURE.md § 13 security commitments against real tests; adds a
+  static no-eval regression guardrail (`src/tools/no-eval.test.ts`).
+- **PEP mapping validation** (`docs/pep-mapping-validation.md`) — confirms
+  every § 14 (#1338) mapping row against real tests.
+- **Open-questions decision log** (`docs/open-questions.md`) — resolves the
+  4 open items from § 16 plus 2 already-resolved items, logged for
+  traceability.
 
-Not yet implemented: conversations/agent loop (Phase 4), interop adapters
-(TASK_0039/0040), `complete()`/`embed()` (TASK_0032/0033).
+All 44 tasks complete. See "Recently completed (TASK_0039–TASK_0044, Phase 6)"
+in `docs/PROGRESS.md` for the full Phase 6 writeup, including GitHub issue
+#5/#6 fixes and issue #4's disposition (investigated, left open with
+rationale).
 
 ## Key files
 
@@ -66,6 +95,9 @@ Not yet implemented: conversations/agent loop (Phase 4), interop adapters
 - `src/core/bhai.ts` — the `BHAI` kernel class. See `docs/core/kernel.md`.
 - `docs/` — implementation documentation. See `docs/ARCHITECTURE.md` for the
   index of per-subsystem docs.
+- `example/` — WebLLM chat browser example (distinct from `examples/`). A
+  vanilla-JS browser app demonstrating streaming, live telemetry, and reasoning
+  block parsing. See `example/AGENTS.md` and `docs/examples/webllm-chat.md`.
 - `tsup.config.ts` — multi-entry ESM build; entry list mirrors `package.json`
   `exports` 1:1.
 

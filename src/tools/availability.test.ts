@@ -263,6 +263,56 @@ describe("isToolTrusted", () => {
 // UNRESOLVED: prompt-injected tool fallback (§ 9.5 step 3 parenthetical).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// § 13 Security: Tool annotations are untrusted hints, never drive availability/approval
+// ---------------------------------------------------------------------------
+
+describe("Security: Tool annotations never drive availability", () => {
+	it("untrusted MCP tools with different annotations resolve to same trust flag", () => {
+		// ARCHITECTURE.md § 13: "annotations are treated as untrusted hints"
+		// § 9.1: "never let them drive availability or auto-approval decisions"
+		// Two MCP tools from the same untrusted server, one with readOnlyHint: true,
+		// one with readOnlyHint: false, should BOTH resolve to trusted: false
+		// because the trust decision is based ONLY on the server name and
+		// trustedSources, never on the annotations field.
+		const toolWithAnnotation = {
+			name: "mcp__untrusted__tool_annotated",
+			description: "tool with hints",
+			inputSchema: { type: "object" },
+			annotations: { readOnlyHint: true, destructiveHint: false },
+			execute: async () => ({ content: [] }),
+		}
+		const toolWithoutAnnotation = {
+			name: "mcp__untrusted__tool_plain",
+			description: "tool without hints",
+			inputSchema: { type: "object" },
+			execute: async () => ({ content: [] }),
+		}
+
+		// Both from untrusted server (not in trustedSources)
+		const opts: ResolveAvailableToolsOptions = { trustedSources: new Set(["trusted-server"]) }
+		const result = resolveAvailableTools(
+			[toolWithAnnotation, toolWithoutAnnotation],
+			undefined,
+			undefined,
+			CAPS_WITH_TOOLS,
+			opts,
+		)
+
+		expect(result).toHaveLength(2)
+		// Both should have trusted: false because server is not in trustedSources
+		expect(result[0]?.trusted).toBe(false)
+		expect(result[1]?.trusted).toBe(false)
+		// Annotations should be preserved on the returned tools (surfaced for host UIs)
+		expect(result[0]?.tool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false })
+		expect(result[1]?.tool.annotations).toBeUndefined()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// UNRESOLVED: prompt-injected tool fallback (§ 9.5 step 3 parenthetical).
+// ---------------------------------------------------------------------------
+
 describe("UNRESOLVED — prompt-injected tool fallback", () => {
 	it("toolCalls: false returns empty array (fallback NOT implemented)", () => {
 		// This test documents the current behavior: when toolCalls: false,

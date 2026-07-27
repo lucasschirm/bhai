@@ -56,6 +56,12 @@ export interface McpClientLike {
 	connect(): Promise<void>
 	/** The BHAI-local server name. */
 	readonly serverName: string
+	/**
+	 * Close the MCP session (TASK_0035). Optional so existing MCP client
+	 * implementations remain structurally compatible. Called during
+	 * `bh.dispose()` to cleanly shut down each attached session.
+	 */
+	close?(): Promise<void>
 }
 
 /**

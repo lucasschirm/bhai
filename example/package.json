@@ -1,0 +1,16 @@
+{
+	"name": "bhai-example",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"preview": "vite"
+	},
+	"dependencies": {
+		"@lucasschirm/bhai": "workspace:*",
+		"@mlc-ai/web-llm": "^0.2.79"
+	},
+	"devDependencies": {
+		"vite": "^5.4.0"
+	}
+}
