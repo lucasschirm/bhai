@@ -1,0 +1,14 @@
+{
+	"name": "bhai",
+	"description": "Repository-local Claude Code plugins for the bhai project.",
+	"owner": {
+		"name": "bhai"
+	},
+	"plugins": [
+		{
+			"name": "typescript-lsp",
+			"source": "./.claude/plugins/typescript-lsp",
+			"description": "TypeScript language server for this repository, installed and started automatically."
+		}
+	]
+}
