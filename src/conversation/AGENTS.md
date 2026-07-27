@@ -40,6 +40,25 @@ Per ARCHITECTURE.md § 11.1, a conversation encapsulates:
   - All 6 test cases from TASK_0024's "Tests Required" section
   - Additional tests for edge cases and accumulation semantics
   - Handler idiom verification (read-then-append for prepend accumulation)
+  - Test suite for the standalone fold-based `Conversation` resolver (issue #4 ordering cases)
+
+- **`event-bus.ts`** (merged from `main`) — Minimal typed conversation-local bus with two
+  dispatch styles: `emit` (plain fan-out) and `fold` (ordered fold threading a running
+  value through handlers). Backs the standalone `Conversation` system-prompt resolver in
+  `system-prompt.ts`, which preserves replace-then-append ordering across `start`
+  handlers (issue #4) — something shallow-merged patches cannot express.
+  - **Two `EventBus` classes exist in this repo.** `core/event-bus.ts` is the
+    framework-wide bus (§ 8: patch chaining, blockable dispatch, reserved namespaces,
+    FIFO serialization) and owns the unqualified `EventBus` name in the root barrel.
+    This module's narrower bus is re-exported from `src/index.ts` as
+    `ConversationEventBus`; `src/index.test.ts` guards that split. Do not re-export it
+    unaliased — `export *` from `./core` would be silently shadowed rather than erroring.
+  - The standalone resolver's exports (`Conversation`, `StartEventPatch`,
+    `ResolvedSystemPrompt`, `StartHandler`) ship from the root barrel only; the kernel's
+    start-event patch shape is `KernelStartEventPatch` (file-level export, not in barrels).
+
+- **`event-bus.test.ts`** — Test suite for the conversation-local bus (`emit` fan-out and
+  `fold` ordering semantics)
 
 - **`agent-loop.ts`** (TASK_0025–0026, with TASK_0035 bug fixes) — The unbounded agent loop:
   - `sendMessage(conversation, content, options)` — Main entry point, implements full loop

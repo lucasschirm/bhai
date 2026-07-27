@@ -1,4 +1,11 @@
-/** @file System-prompt layering and start-event firing (TASK_0024) */
+/**
+ * @file System-prompt layering and start-event firing (TASK_0024), plus the
+ * standalone fold-based `Conversation` system-prompt resolver that landed on
+ * `main` ahead of the kernel (issue #4: replace-then-append ordering across
+ * `start` handlers). Both surfaces are exported: the kernel path
+ * (`ensureStarted`/`computePreContextSystemPrompt`) ships from `./core`, the
+ * standalone resolver (`Conversation`) ships from the root barrel only.
+ */
 
 import type { BHAI } from "../core/bhai.js"
 import type { ContentBlock } from "../types/content.js"
@@ -6,6 +13,7 @@ import type { EmitResult } from "../types/events.js"
 import type { BHAIMessage } from "../types/message.js"
 import type { CreateConversationOptions } from "./conversation.js"
 import type { BHAIConversationImpl } from "./conversation.js"
+import { EventBus } from "./event-bus.js"
 
 /**
  * Message initialization shape — input to `prepend` arrays in start-event patches.
@@ -38,14 +46,19 @@ export interface MessageInit {
 }
 
 /**
- * Start-event patch shape — returned by handlers listening for `conversation.start`.
+ * Start-event patch shape — returned by handlers listening for the kernel
+ * conversation's `start` event (`conversation.start`).
+ *
+ * Not to be confused with {@link StartEventPatch}, the patch shape of the
+ * standalone fold-based {@link Conversation} resolver below — that one carries
+ * `prepend: string[]` and is the shape exported from the root barrel.
  *
  * Handlers may return any combination of:
  * - `{ systemPrompt: string }` — REPLACES the current prompt outright (layer 3)
  * - `{ appendSystemPrompt: string }` — APPENDS to the current prompt (layer 3)
  * - `{ prepend: MessageInit[] }` — inserts messages at the top of history (§ 11.6)
  */
-export interface StartEventPatch {
+export interface KernelStartEventPatch {
 	/** Replaces the system prompt outright. */
 	systemPrompt?: string
 
@@ -149,7 +162,7 @@ export async function ensureStarted(
 	})
 
 	// Apply patches from handlers.
-	const patch = result.patch as Partial<StartEventPatch>
+	const patch = result.patch as Partial<KernelStartEventPatch>
 
 	// Layer 3: apply system-prompt patches.
 	if ("systemPrompt" in patch && patch.systemPrompt !== undefined) {
@@ -231,4 +244,139 @@ function initToMessage(init: MessageInit): BHAIMessage {
 	}
 
 	return message
+}
+
+// ============================================================================
+// Standalone fold-based system-prompt resolver (merged from `main`).
+// Backed by the conversation-local `EventBus.fold` primitive so that
+// replace-then-append ordering across `start` handlers is preserved (issue #4).
+// Exported from the root barrel only (`Conversation`, `StartEventPatch`,
+// `ResolvedSystemPrompt`, `StartHandler`).
+// ============================================================================
+
+/**
+ * Sugar patch a `start` handler may return to influence the resolved system
+ * prompt. All fields are optional; a handler that returns `undefined` (or has no
+ * `return`) leaves the running value untouched.
+ *
+ * - `systemPrompt` — **replace** the running system prompt outright.
+ * - `appendSystemPrompt` — **append** a section after the running system prompt
+ *   (separated by a blank line).
+ * - `prepend` — accumulate lines onto the front of the running `prepend` list.
+ *
+ * When a single patch carries both `systemPrompt` and `appendSystemPrompt`, the
+ * replace applies first and the append second, so `{ systemPrompt: "X",
+ * appendSystemPrompt: "Y" }` resolves to `"X\n\nY"`.
+ */
+export interface StartEventPatch {
+	systemPrompt?: string
+	appendSystemPrompt?: string
+	prepend?: string[]
+}
+
+/** The fully resolved system-prompt state after all `start` handlers have run. */
+export interface ResolvedSystemPrompt {
+	systemPrompt: string
+	prepend: readonly string[]
+}
+
+/**
+ * A `start` handler. Receives the value left behind by the previous handler and
+ * returns a {@link StartEventPatch} describing how to combine against it.
+ *
+ * Because each handler reads the *running* resolved value rather than emitting an
+ * isolated patch that is later shallow-merged, the ordering between replace-style
+ * and append-style handlers is preserved: handler A returning
+ * `{ systemPrompt: "X" }` followed by handler B returning
+ * `{ appendSystemPrompt: "Y" }` resolves to `"X\n\nY"`, while the reverse order
+ * resolves to `"X"`.
+ */
+// biome-ignore lint/suspicious/noConfusingVoidType: a handler may return a patch or nothing (leaving the running value unchanged)
+export type StartHandler = (current: ResolvedSystemPrompt) => StartEventPatch | undefined | void
+
+type ConversationEvents = {
+	start: ResolvedSystemPrompt
+}
+
+function appendSection(base: string, addition: string): string {
+	return base.length > 0 ? `${base}\n\n${addition}` : addition
+}
+
+/**
+ * Combine `patch` against the running resolved value.
+ *
+ * `systemPrompt` (replace) is applied before `appendSystemPrompt` (append) so a
+ * single patch carrying both keys yields `"<replace>\n\n<append>"`. `prepend`
+ * lines from this patch are placed ahead of whatever the running value already
+ * accumulated.
+ */
+function applyStartPatch(
+	current: ResolvedSystemPrompt,
+	patch: StartEventPatch,
+): ResolvedSystemPrompt {
+	let systemPrompt = current.systemPrompt
+	if (patch.systemPrompt !== undefined) {
+		systemPrompt = patch.systemPrompt
+	}
+	if (patch.appendSystemPrompt !== undefined) {
+		systemPrompt = appendSection(systemPrompt, patch.appendSystemPrompt)
+	}
+
+	const prepend =
+		patch.prepend !== undefined ? [...patch.prepend, ...current.prepend] : current.prepend
+
+	return { systemPrompt, prepend }
+}
+
+/**
+ * Owns the resolution of a conversation's system prompt from a base prompt plus
+ * an ordered chain of `start` handlers.
+ *
+ * Resolution is lazy: handlers run once, on the first {@link ensureStarted} (or
+ * {@link systemPrompt}) call, and the result is cached for the lifetime of the
+ * conversation.
+ */
+export class Conversation {
+	private readonly bus = new EventBus<ConversationEvents>()
+	private readonly baseSystemPrompt: string
+	private resolved: ResolvedSystemPrompt | undefined
+
+	constructor(baseSystemPrompt = "") {
+		this.baseSystemPrompt = baseSystemPrompt
+	}
+
+	/**
+	 * Register a `start` handler. Handlers run in registration order when the
+	 * conversation is first started. Returns a disposer that unregisters the
+	 * handler (only meaningful before {@link ensureStarted} has run).
+	 */
+	onStart(handler: StartHandler): () => void {
+		return this.bus.on("start", (current) => {
+			const patch = handler(current)
+			return patch === undefined ? current : applyStartPatch(current, patch)
+		})
+	}
+
+	/**
+	 * Resolve and cache the system prompt by folding the seed value through every
+	 * registered `start` handler in order. Idempotent: subsequent calls return the
+	 * cached result without re-running handlers.
+	 */
+	ensureStarted(): ResolvedSystemPrompt {
+		if (this.resolved === undefined) {
+			const seed: ResolvedSystemPrompt = { systemPrompt: this.baseSystemPrompt, prepend: [] }
+			this.resolved = this.bus.fold("start", seed)
+		}
+		return this.resolved
+	}
+
+	/** The resolved system-prompt string (starts the conversation if needed). */
+	get systemPrompt(): string {
+		return this.ensureStarted().systemPrompt
+	}
+
+	/** The resolved prepend lines (starts the conversation if needed). */
+	get prepend(): readonly string[] {
+		return this.ensureStarted().prepend
+	}
 }

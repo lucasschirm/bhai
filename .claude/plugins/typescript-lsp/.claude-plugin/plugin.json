@@ -1,0 +1,5 @@
+{
+	"name": "typescript-lsp",
+	"description": "TypeScript language server for this repository, installed and started automatically.",
+	"version": "0.1.0"
+}
