@@ -903,3 +903,158 @@ describe("McpClient tools/call (TASK_0012)", () => {
 		expect(typeof progress).toBe("function")
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Session termination (`close()`).
+// ---------------------------------------------------------------------------
+
+describe("McpClient close — session termination", () => {
+	/** Handshake + empty discovery, leaving the client connected with a session id. */
+	function connectedResponses(sessionId = "sess-close"): Response[] {
+		return [
+			jsonResponse(initResult(), { sessionId }),
+			acceptedResponse(),
+			jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }),
+		]
+	}
+
+	it("sends DELETE to the endpoint with the Mcp-Session-Id and protocol-version headers", async () => {
+		const { calls } = installFetchSequence([
+			...connectedResponses("sess-close"),
+			new Response(null, { status: 204 }),
+		])
+		const { client } = freshClient({ url: "https://example.com/mcp" })
+		await client.connect()
+		await client.close()
+
+		const deleteCall = calls()[3]
+		expect(deleteCall.url).toBe("https://example.com/mcp")
+		expect(deleteCall.init.method).toBe("DELETE")
+		const headers = new Headers(deleteCall.init.headers)
+		expect(headers.get("Mcp-Session-Id")).toBe("sess-close")
+		expect(headers.get("MCP-Protocol-Version")).toBe("2025-11-25")
+		expect(deleteCall.init.body).toBeUndefined()
+	})
+
+	it("merges the host-supplied config headers into the DELETE", async () => {
+		const { calls } = installFetchSequence([
+			...connectedResponses(),
+			new Response(null, { status: 204 }),
+		])
+		const { client } = freshClient({
+			url: "https://example.com/mcp",
+			headers: { Authorization: "Bearer t0ken" },
+		})
+		await client.connect()
+		await client.close()
+
+		const headers = new Headers(calls()[3].init.headers)
+		expect(headers.get("Authorization")).toBe("Bearer t0ken")
+	})
+
+	it("skips the DELETE entirely when the server issued no session id", async () => {
+		const { calls } = installFetchSequence([
+			jsonResponse(initResult(), { sessionId: null }),
+			acceptedResponse(),
+			jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }),
+		])
+		const { client } = freshClient({ url: "https://example.com/mcp" })
+		await client.connect()
+		await client.close()
+
+		// Only the three handshake/discovery calls — no fourth (DELETE) call.
+		expect(calls()).toHaveLength(3)
+	})
+
+	it("does not throw when the server answers 405 (termination not allowed)", async () => {
+		installFetchSequence([...connectedResponses(), new Response(null, { status: 405 })])
+		const { client } = freshClient({ url: "https://example.com/mcp" })
+		await client.connect()
+		await expect(client.close()).resolves.toBeUndefined()
+	})
+
+	it("does not throw when the DELETE fails at the network layer", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse(initResult(), { sessionId: "sess-net" }))
+			.mockResolvedValueOnce(acceptedResponse())
+			.mockResolvedValueOnce(jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }))
+			.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+		vi.stubGlobal("fetch", fetchMock)
+
+		const { client } = freshClient({ url: "https://example.com/mcp" })
+		await client.connect()
+		await expect(client.close()).resolves.toBeUndefined()
+	})
+
+	it("resets handshake state, so a later request no longer echoes the dead session id", async () => {
+		const { calls } = installFetchSequence([
+			...connectedResponses("sess-stale"),
+			new Response(null, { status: 204 }),
+			// Second connect, after close.
+			jsonResponse(initResult(), { sessionId: "sess-fresh" }),
+			acceptedResponse(),
+			jsonResponse({ jsonrpc: "2.0", id: "x", result: { tools: [] } }),
+		])
+		const { client } = freshClient({ url: "https://example.com/mcp" })
+		await client.connect()
+		await client.close()
+		expect(client.capabilities).toBeNull()
+
+		await client.connect()
+		// The re-`initialize` must NOT carry the terminated session's id.
+		const reinitHeaders = new Headers(calls()[4].init.headers)
+		expect(reinitHeaders.get("Mcp-Session-Id")).toBeNull()
+		// ...and the fresh session id is picked up for the next request.
+		const freshToolsList = new Headers(calls()[6].init.headers)
+		expect(freshToolsList.get("Mcp-Session-Id")).toBe("sess-fresh")
+	})
+
+	it("aborts an in-flight tools/call so its fetch terminates", async () => {
+		// A tools/call whose fetch never settles on its own — only the abort
+		// signal can end it. `close()` must trip it.
+		let abortSignal: AbortSignal | undefined
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse(initResult(), { sessionId: "sess-inflight" }))
+			.mockResolvedValueOnce(acceptedResponse())
+			.mockResolvedValueOnce(
+				jsonResponse({
+					jsonrpc: "2.0",
+					id: "x",
+					result: { tools: [{ name: "t", description: "d", inputSchema: { type: "object" } }] },
+				}),
+			)
+			.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+				abortSignal = init.signal ?? undefined
+				return new Promise<Response>((_resolve, reject) => {
+					init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+				})
+			})
+			.mockResolvedValue(new Response(null, { status: 204 }))
+		vi.stubGlobal("fetch", fetchMock)
+
+		const { client, registry } = freshClient({ url: "https://example.com/mcp", name: "srv" })
+		await client.connect()
+		await flush()
+
+		const def = registry.listTools()[0]
+		const callPromise = Promise.resolve(
+			def.execute({
+				conversation: undefined,
+				params: {},
+				toolCallId: "tc-inflight",
+				signal: new AbortController().signal,
+				progress: vi.fn(),
+			}),
+		).catch(() => "rejected")
+
+		// Let the tools/call fetch start before closing.
+		await flush()
+		expect(abortSignal?.aborted).toBe(false)
+
+		await client.close()
+		expect(abortSignal?.aborted).toBe(true)
+		await expect(callPromise).resolves.toBe("rejected")
+	})
+})

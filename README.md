@@ -36,7 +36,7 @@ Note: The `@lucasschirm/bhai/plugins/webllm` driver requires `@mlc-ai/web-llm` a
 | `@lucasschirm/bhai/core`             | Kernel only (BHAI, BHAIConversation, types, decorators, event bus)                              |
 | `@lucasschirm/bhai/plugins/webllm`   | WebLLM driver plugin (peer dep: @mlc-ai/web-llm)                                                |
 | `@lucasschirm/bhai/plugins/ollama`   | Ollama driver plugin (fetch, no deps beyond web-standard APIs)                                  |
-| `@lucasschirm/bhai/plugins/mcp`      | MCP streamable-HTTP client plugin                                                               |
+| `@lucasschirm/bhai/plugins/mcp`      | MCP streamable-HTTP client plugin + server lifecycle manager                                     |
 | `@lucasschirm/bhai/plugins/interop/pi` | Adapter to run (a subset of) pi coding-agent extensions                                        |
 | `@lucasschirm/bhai/plugins/interop/opencode` | Adapter to run (a subset of) OpenCode plugins                                           |
 
@@ -95,6 +95,36 @@ await bh.dispose()
 ```
 
 See `examples/readme-quickstart.ts` for the complete working example, and `examples/readme-quickstart.test.ts` for how to test it with a mocked HTTP layer.
+
+## Attaching MCP servers
+
+The kernel never imports optional plugin code, so `bh.addMcp()` builds its client through a factory that `mcpPlugin` registers. Register the plugin before `init()` and every HTTP MCP server's tools land in the same registry as your local ones:
+
+```typescript
+import { BHAI } from "@lucasschirm/bhai"
+import { mcpPlugin } from "@lucasschirm/bhai/plugins/mcp"
+
+const bh = new BHAI()
+bh.use(mcpPlugin) // before init() — without it, addMcp() refuses to attach
+await bh.init()
+
+await bh.addMcp({ url: "https://example.com/mcp", name: "github" })
+// The server's tools are now callable as mcp__github__<tool>.
+```
+
+For a UI, `createMcpPlugin()` also hands back an `McpManager` that tracks each server's status, discovered tools, and structured failures, with `subscribe()` for re-rendering:
+
+```typescript
+const { plugin, manager } = createMcpPlugin()
+bh.use(plugin)
+await bh.init()
+
+manager.subscribe((servers) => render(servers))
+const state = await manager.add({ url: "https://example.com/mcp" })
+// state.status is "connected" or "error" — add() reports failure as state, never rejects.
+```
+
+See `docs/plugins/mcp-client.md` for the full API, and `example/` for a working panel built on it.
 
 ## v0.1 Scope
 

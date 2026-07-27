@@ -11,10 +11,12 @@
  */
 
 import { BHAI } from "@lucasschirm/bhai"
+import { createMcpPlugin } from "@lucasschirm/bhai/plugins/mcp"
 import { WebLLM } from "@lucasschirm/bhai/plugins/webllm"
 import * as webllm from "@mlc-ai/web-llm"
 
 import { formatSeconds, formatTokens, formatTps } from "./lib/format.js"
+import { loadServers, parseHeaderLines, saveServers, validateServerUrl } from "./lib/mcp-store.js"
 import { parseRuntimeStats } from "./lib/stats.js"
 import { thermalColor, thermalRatio } from "./lib/thermal.js"
 import * as ui from "./ui.js"
@@ -42,6 +44,14 @@ let driver = null
 
 /** @type {InstanceType<typeof import('@lucasschirm/bhai').BHAIConversation>} */
 let conversation = null
+
+/**
+ * Observable MCP server lifecycle (status, discovered tools, structured
+ * errors). Created alongside the plugin before `bh.init()`; usable once init
+ * resolves.
+ * @type {import('@lucasschirm/bhai/plugins/mcp').McpManager | null}
+ */
+let mcpManager = null
 
 /** Track whether the model has been loaded/warmed up yet this session. */
 let modelLoaded = false
@@ -116,11 +126,24 @@ async function initialize() {
 		driver = new WebLLM({ engine })
 		bh.addDriver(driver)
 
+		// Register the MCP plugin. It fills the kernel's client-factory seam —
+		// without it `bh.addMcp()` refuses to attach anything — and hands back a
+		// manager that makes each attached server's state observable. Must be
+		// `use()`d before `init()`; the manager is only usable after.
+		const mcp = createMcpPlugin()
+		bh.use(mcp.plugin)
+		mcpManager = mcp.manager
+
 		// Initialize the kernel (runs plugin hooks, resolves models, etc.).
 		await bh.init()
 
 		// Wire up UI interactions.
 		setupEventHandlers(modelsToShow)
+
+		// Bring up the MCP panel and reconnect anything saved from last session.
+		// Deliberately not awaited: a slow or dead MCP endpoint must not delay
+		// the chat UI, and every outcome lands in the panel either way.
+		void setupMcp()
 
 		// Create the conversation for the preselected default model so the very
 		// first message works without requiring the user to change the selection.
@@ -238,6 +261,146 @@ function setupEventHandlers(availableModels) {
 			await sendMessage(text)
 		}
 	})
+}
+
+/**
+ * Bring the MCP panel online: subscribe it to the manager, wire the
+ * add-server form and the error dialog, then reconnect saved servers.
+ */
+async function setupMcp() {
+	if (!mcpManager) return
+
+	// The panel is a pure reflection of manager state — every transition
+	// (including the `connecting` one that fires before the network call)
+	// re-renders it.
+	mcpManager.subscribe((states) => ui.renderMcpServers(states, mcpHandlers))
+	ui.renderMcpServers(mcpManager.list(), mcpHandlers)
+
+	setupMcpEventHandlers()
+
+	// Restore saved servers one at a time. Sequential rather than concurrent so
+	// the panel fills top-down in a readable order; a failure becomes an error
+	// card and never blocks the servers behind it.
+	for (const saved of loadServers()) {
+		await mcpManager.add(saved)
+	}
+}
+
+/**
+ * Card-level actions, passed into the renderer so `ui.js` can attach them to
+ * the buttons it creates without knowing about the manager.
+ * @type {import('./ui.js').McpCardHandlers}
+ */
+const mcpHandlers = {
+	onRefresh: (id) => {
+		void mcpManager?.refresh(id)
+	},
+	onRetry: (id) => {
+		void mcpManager?.retry(id)
+	},
+	onRemove: (id) => {
+		void removeMcpServer(id)
+	},
+	onShowError: (id) => {
+		const state = mcpManager?.get(id)
+		if (state?.error) ui.showMcpError(state.error)
+	},
+}
+
+/**
+ * Detach a server and update the persisted list.
+ * @param {string} id - manager entry id
+ */
+async function removeMcpServer(id) {
+	if (!mcpManager) return
+	try {
+		await mcpManager.remove(id)
+		persistMcpServers()
+	} catch (error) {
+		console.error("Failed to remove MCP server:", error)
+	}
+}
+
+/**
+ * Persist the current server list.
+ *
+ * Derived from manager state rather than tracked separately, so the stored
+ * list cannot drift from what is on screen. Errored entries are kept — the
+ * user asked for that server, and a failure is usually transient (server not
+ * started yet, token expired); dropping it would silently discard their input.
+ */
+function persistMcpServers() {
+	if (!mcpManager) return
+	saveServers(
+		mcpManager.list().map((state) => ({
+			url: state.config.url,
+			name: state.config.name,
+			headers: state.config.headers,
+		})),
+	)
+}
+
+/**
+ * Wire the add-server form and the error dialog's close affordances.
+ */
+function setupMcpEventHandlers() {
+	const form = document.getElementById("mcp-add-form")
+	form?.addEventListener("submit", async (e) => {
+		e.preventDefault()
+		await submitMcpForm()
+	})
+
+	document.getElementById("mcp-error-close")?.addEventListener("click", () => {
+		ui.hideMcpError()
+	})
+}
+
+/**
+ * Validate the add-server form and attach the server.
+ */
+async function submitMcpForm() {
+	if (!mcpManager) return
+
+	const { url, name, headersText } = ui.getMcpFormValues()
+
+	const urlError = validateServerUrl(url)
+	if (urlError) {
+		ui.showMcpFormError(urlError)
+		return
+	}
+
+	const { headers, errors } = parseHeaderLines(headersText)
+	if (errors.length > 0) {
+		ui.showMcpFormError(errors.join(" "))
+		return
+	}
+
+	ui.clearMcpFormError()
+	ui.setMcpFormBusy(true)
+
+	try {
+		const trimmedName = name.trim()
+		const state = await mcpManager.add({
+			url: url.trim(),
+			...(trimmedName ? { name: trimmedName } : {}),
+			...(Object.keys(headers).length > 0 ? { headers } : {}),
+		})
+
+		persistMcpServers()
+
+		if (state.status === "connected") {
+			// Only clear the form on success: a failed attempt usually needs a
+			// small edit (a typo in the path, a stale token), and wiping the
+			// fields would make the user retype all of it.
+			ui.resetMcpForm()
+		} else {
+			ui.showMcpFormError(
+				`${state.error?.name ?? "Error"}: ${state.error?.message ?? "connection failed"}`,
+			)
+		}
+	} finally {
+		ui.setMcpFormBusy(false)
+	}
 }
 
 /**

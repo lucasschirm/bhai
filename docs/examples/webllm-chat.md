@@ -56,6 +56,7 @@ Navigate to `http://localhost:5173`.
 main.js (orchestration)
 ├─ Loads BHAI kernel
 ├─ Registers WebLLM driver
+├─ Registers the MCP plugin + holds its McpManager
 ├─ Wires conversation lifecycle
 ├─ Sends messages & measures TTFT
 ├─ Extracts stats via engine.runtimeStatsText()
@@ -66,12 +67,14 @@ ui.js (DOM helpers)
 ├─ setStatus(), showColdStartPanel()
 ├─ beginAssistantTurn(), appendThoughtDelta(), appendAnswerDelta()
 ├─ updateTelemetry()
+├─ renderMcpServers(), showMcpError(), MCP form helpers
 └─ All direct DOM querying & mutation
 
 Lib modules (pure functions, testable)
 ├─ stats.js — extract tok/s from engine.runtimeStatsText()
 ├─ thermal.js — map decode tok/s to colors
-└─ format.js — pretty-print numbers for display
+├─ format.js — pretty-print numbers for display
+└─ mcp-store.js — persist servers, parse headers, interpret errors
 ```
 
 ### Thought splitting (`parseThink`)
@@ -153,6 +156,44 @@ The progress bar fill and color interpolate from cold cyan → warm coral. Once 
 
 While generating, the Send button becomes a Stop button. Clicking Stop calls `conversation.abort()`, which propagates an abort signal through the agent loop and cancels the in-flight `sendMessage()` promise. The UI state is reset in a `finally` block.
 
+### MCP servers
+
+The telemetry rail carries an **MCP SERVERS** panel where you attach
+streamable-HTTP MCP servers at runtime. Expand *Add HTTP server*, paste an
+endpoint URL (optionally a name and extra headers, one `Key: Value` per line),
+and press Connect.
+
+Each server gets a card showing its live status — a pulsing violet dot while
+the handshake is in flight, green once connected, coral on failure — plus a
+collapsible list of the tools it exposes. Connected tools land in the same
+shared registry as local ones, so the model can call them in conversation with
+no further wiring.
+
+Card actions:
+
+| Icon | Shown when | Does |
+| ---- | ---------- | ---- |
+| ⟳ | connected | Re-polls `tools/list` and updates the tool list |
+| 🐛 | failed | Opens the error-details dialog |
+| ↻ | failed | Retries the connection |
+| ✕ | always | Closes the session and unregisters the server's tools |
+
+The 🐛 dialog shows the error name, endpoint, timestamp, full message, a stack
+trace, and — where the raw message is unhelpful — a plain-language hint about
+what to check.
+
+Two constraints worth knowing:
+
+- **CORS applies.** The endpoint must send `Access-Control-Allow-Origin` for
+  `http://localhost:5173` and allow the `Content-Type`,
+  `MCP-Protocol-Version`, `Mcp-Session-Id`, and `Authorization` headers.
+- **Tool lists do not update on their own.** The client holds no SSE stream, so
+  `notifications/tools/list_changed` never arrives — that is what ⟳ is for.
+
+Servers persist to `localStorage` and reconnect on load. ⚠️ That includes any
+headers you entered, stored in plaintext under this origin — convenient for a
+local demo, not a pattern to copy into production.
+
 ## Design: "Cold start → running hot"
 
 The visual design uses a **thermal metaphor**:
@@ -214,6 +255,40 @@ On mobile (<861px), it stacks into a single column.
   - Reload and try a smaller model.
   - Close other tabs to free memory.
   - Check your device's available RAM (WebLLM needs ~2–3x the model size in working memory).
+
+### An MCP server fails with "TypeError: Failed to fetch"
+
+- **Cause**: Most often CORS. A browser reports a CORS rejection, an
+  unreachable host, and a refused connection identically, with no detail
+  available to JavaScript.
+- **Solution**:
+  - Confirm the server sends `Access-Control-Allow-Origin` for
+    `http://localhost:5173` and allows the `Content-Type`,
+    `MCP-Protocol-Version`, `Mcp-Session-Id`, and `Authorization` headers
+    (including on the `OPTIONS` preflight).
+  - Confirm something is actually listening on that host and port.
+  - Check the browser's Network tab, which shows the CORS reason even though
+    JavaScript cannot.
+
+### An MCP server fails with "MCP HTTP 404 Not Found"
+
+- **Cause**: The URL points at the host but not at the MCP endpoint.
+- **Solution**: Most servers mount it at `/mcp` — check the server's docs for
+  the exact path.
+
+### An MCP server connects but lists no tools
+
+- **Cause**: The server exposes none, or it was attached with `deferred: true`
+  (in which case only the two synthetic `list_tools`/`search_tools` entries
+  register until the model calls one).
+- **Solution**: Press ⟳ to re-poll. Note that a re-poll is a no-op unless the
+  server declared the `tools.listChanged` capability.
+
+### A newly added tool doesn't show up
+
+- **Cause**: Expected — the client holds no SSE stream, so it never receives
+  `notifications/tools/list_changed`.
+- **Solution**: Press ⟳ on the server's card.
 
 ## Development notes
 

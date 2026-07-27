@@ -365,8 +365,14 @@ function nextRequestId(): string {
  * the hostname (without port) is used as a stable, human-readable fallback.
  * Non-alphanumeric characters in the hostname are replaced with `-` so the
  * resulting tool names stay within § 9.1's `[a-zA-Z0-9_.-]` allowed set.
+ *
+ * Exported for {@link McpManager}, which needs the same fallback to know a
+ * server's `mcp__<server>__` tool prefix before the handshake resolves. It is
+ * exported from this module only — not re-exported from the subpath barrel —
+ * so it stays an internal detail of `src/plugins/mcp/` rather than part of the
+ * package's public API.
  */
-function deriveServerName(url: string): string {
+export function deriveServerName(url: string): string {
 	try {
 		const host = new URL(url).hostname
 		return host.replace(/[^a-zA-Z0-9_.-]/g, "-") || "mcp-server"
@@ -871,6 +877,92 @@ export class McpClient {
 		}
 		this.cachedToolNames = freshNamespaced
 		return { added, removed, updated }
+	}
+
+	/**
+	 * Terminate the MCP session and reset this client to its pre-handshake
+	 * state. Satisfies the kernel's optional `McpClientLike.close?()`, which
+	 * `bh.dispose()` calls on every attached handle, and backs the manager's
+	 * detach path.
+	 *
+	 * Steps, in order:
+	 *  1. Abort every in-flight `tools/call` by tripping its internal
+	 *     `AbortController`, which terminates the underlying `fetch`. No
+	 *     `notifications/cancelled` is sent per call: that notification is
+	 *     wired to the *invocation's* signal (see {@link executeToolCall}),
+	 *     and on close the session DELETE below tells the server to drop
+	 *     everything anyway — one message instead of N.
+	 *  2. If a session id was captured, send `DELETE` to the endpoint with the
+	 *     `Mcp-Session-Id` header — the spec's explicit client-side session
+	 *     termination (spec: /basic/transports, "Session Management").
+	 *  3. Clear the negotiated protocol version, session id, server
+	 *     capabilities, and the discovery caches.
+	 *
+	 * NEVER THROWS. A server is explicitly allowed to answer the DELETE with
+	 * `405 Method Not Allowed` (it does not permit client-initiated
+	 * termination), and a close that races a dropped connection should not
+	 * turn into an unhandled rejection during teardown. Both cases are
+	 * swallowed; local state is reset regardless.
+	 *
+	 * TRANSPORT-ONLY: this does NOT unregister the tools discovery put into
+	 * the shared {@link ToolRegistry}. Tool cleanup belongs to whoever owns
+	 * the registry — {@link McpManager.remove} does it on detach, and
+	 * `bh.dispose()` tears the whole registry down anyway. Unregistering here
+	 * would make `close()` silently destructive for the dispose path.
+	 */
+	async close(): Promise<void> {
+		// 1. Abort in-flight calls. Iterate a copy: aborting settles the call,
+		// whose `finally` deletes its entry from the live map.
+		for (const controller of Array.from(this.inflightCalls.values())) {
+			try {
+				controller.abort()
+			} catch {
+				// An already-aborted controller is not an error worth surfacing.
+			}
+		}
+		this.inflightCalls.clear()
+
+		// 2. Best-effort session termination. Only meaningful when the server
+		// issued a session id — a stateless server has nothing to delete.
+		if (this.sessionId !== null) {
+			try {
+				await this.deleteSession()
+			} catch {
+				// 405 (termination not allowed), a network failure, or a
+				// mid-teardown abort. Local state is reset either way.
+			}
+		}
+
+		// 3. Reset to pre-handshake state so a later `connect()` on the same
+		// instance starts clean rather than echoing a dead session id.
+		this.protocolVersion = null
+		this.sessionId = null
+		this.serverCapabilities = null
+		this.cachedToolNames = new Set()
+		this.cachedDeferredTools = undefined
+		this.deferredEagerRegistered = false
+	}
+
+	/**
+	 * Send the `DELETE` that terminates the session, mirroring {@link post}'s
+	 * header contract (protocol version + session id + host-supplied extras)
+	 * minus the JSON body, which a DELETE does not carry. Split out of
+	 * {@link close} so the "never throws" policy lives in exactly one place.
+	 */
+	private async deleteSession(): Promise<void> {
+		const headers = new Headers()
+		if (this.protocolVersion !== null) {
+			headers.set("MCP-Protocol-Version", this.protocolVersion)
+		}
+		if (this.sessionId !== null) {
+			headers.set("Mcp-Session-Id", this.sessionId)
+		}
+		if (this.config.headers) {
+			for (const [k, v] of Object.entries(this.config.headers)) {
+				headers.set(k, v)
+			}
+		}
+		await fetch(this.config.url, { method: "DELETE", headers })
 	}
 
 	/**

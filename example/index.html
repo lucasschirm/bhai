@@ -38,9 +38,91 @@
       </div>
     </section>
     <aside class="telemetry" id="telemetry">
-      <!-- cold-start panel + decode/prefill/ttft/tokens/context readouts -->
+      <!--
+        The stats region is re-rendered wholesale after every turn, so anything
+        that must survive a turn (the MCP panel below) lives outside it.
+      -->
+      <div id="telemetry-stats">
+        <!-- cold-start panel + decode/prefill/ttft/tokens/context readouts -->
+      </div>
+
+      <section class="telemetry-panel mcp-panel" id="mcp-panel" aria-labelledby="mcp-panel-title">
+        <div class="telemetry-eyebrow" id="mcp-panel-title">MCP servers</div>
+        <ul class="mcp-list" id="mcp-server-list" aria-live="polite"></ul>
+
+        <details class="mcp-add" id="mcp-add">
+          <summary>Add HTTP server</summary>
+          <form id="mcp-add-form" novalidate>
+            <label class="mcp-field" for="mcp-url">
+              <span>Endpoint URL</span>
+              <input
+                id="mcp-url"
+                name="url"
+                type="url"
+                required
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="https://example.com/mcp"
+              />
+            </label>
+
+            <label class="mcp-field" for="mcp-name">
+              <span>Name <em>optional</em></span>
+              <input
+                id="mcp-name"
+                name="name"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="derived from the hostname"
+              />
+            </label>
+
+            <label class="mcp-field" for="mcp-headers">
+              <span>Headers <em>optional</em></span>
+              <textarea
+                id="mcp-headers"
+                name="headers"
+                rows="2"
+                spellcheck="false"
+                placeholder="Authorization: Bearer …"
+              ></textarea>
+            </label>
+
+            <p class="mcp-note">
+              Saved in this browser's localStorage, headers included — don't paste a
+              token you wouldn't leave on disk.
+            </p>
+
+            <p class="mcp-form-error" id="mcp-add-error" role="alert" hidden></p>
+
+            <button type="submit" id="mcp-add-submit">Connect</button>
+          </form>
+        </details>
+      </section>
     </aside>
   </main>
+
+  <dialog class="mcp-error-dialog" id="mcp-error-dialog" aria-labelledby="mcp-error-title">
+    <header>
+      <h2 id="mcp-error-title">Connection error</h2>
+      <button type="button" id="mcp-error-close" aria-label="Close error details">✕</button>
+    </header>
+    <dl class="mcp-error-meta">
+      <dt>Error</dt>
+      <dd id="mcp-error-name"></dd>
+      <dt>Endpoint</dt>
+      <dd id="mcp-error-url"></dd>
+      <dt>When</dt>
+      <dd id="mcp-error-time"></dd>
+    </dl>
+    <p class="mcp-error-message" id="mcp-error-message"></p>
+    <p class="mcp-error-hint" id="mcp-error-hint" hidden></p>
+    <details class="mcp-error-stack" id="mcp-error-stack-wrap">
+      <summary>Stack trace</summary>
+      <pre id="mcp-error-stack"></pre>
+    </details>
+  </dialog>
 
   <footer class="composer">
     <textarea
