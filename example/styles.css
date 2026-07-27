@@ -159,6 +159,25 @@ body {
 	animation: thermal-pulse 1.5s ease-in-out infinite;
 }
 
+/* MCP server lifecycle states, sharing the status-dot vocabulary: a handshake
+   in flight reads like a model warming up, a live server like a ready one. */
+.status-dot[data-state="connecting"] {
+	background: var(--mid);
+	animation: thermal-pulse 1.5s ease-in-out infinite;
+}
+
+.status-dot[data-state="connected"] {
+	background: var(--ok);
+}
+
+.status-dot[data-state="error"] {
+	background: var(--warm);
+}
+
+.status-dot[data-state="detached"] {
+	background: var(--muted);
+}
+
 @keyframes thermal-shimmer {
 	0%,
 	100% {
@@ -188,6 +207,11 @@ body {
 	.status-dot[data-state="generating"] {
 		animation: none;
 		background: var(--warm);
+	}
+
+	.status-dot[data-state="connecting"] {
+		animation: none;
+		background: var(--mid);
 	}
 }
 
@@ -581,4 +605,460 @@ details[open] > summary::before {
 		padding: 0.6rem 1rem;
 		font-size: 13px;
 	}
+}
+
+/* ─── MCP servers panel ──────────────────────────────────────────────────
+   Lives in the telemetry rail as a sibling of the stats region, so a turn's
+   wholesale stats re-render never touches it. Everything below reuses the
+   existing tokens — no new palette. */
+.mcp-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.mcp-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.mcp-empty {
+	font-size: 12px;
+	color: var(--muted);
+}
+
+.mcp-server {
+	padding: 0.5rem;
+	background: var(--graphite-900);
+	border: 1px solid var(--line);
+	border-left: 2px solid var(--line);
+	border-radius: 4px;
+}
+
+.mcp-server[data-status="connected"] {
+	border-left-color: var(--ok);
+}
+
+.mcp-server[data-status="error"] {
+	border-left-color: var(--warm);
+}
+
+.mcp-server[data-status="connecting"] {
+	border-left-color: var(--mid);
+}
+
+.mcp-server-head {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.mcp-server-name {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--text);
+	/* The rail is narrow and server names come from user-entered URLs, so a
+	   long name truncates rather than pushing the action buttons out of view. */
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex: 1;
+	min-width: 0;
+}
+
+.mcp-actions {
+	display: flex;
+	gap: 0.15rem;
+	flex-shrink: 0;
+}
+
+.mcp-icon-button {
+	padding: 0.1rem 0.25rem;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	color: var(--muted);
+	font-size: 11px;
+	line-height: 1.4;
+	cursor: pointer;
+	transition: all 150ms ease;
+}
+
+.mcp-icon-button:hover {
+	background: var(--graphite-700);
+	border-color: var(--line);
+	color: var(--text);
+}
+
+.mcp-icon-button:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 1px;
+}
+
+.mcp-icon-button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.mcp-server-status {
+	margin-top: 0.15rem;
+	padding-left: 1rem;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.mcp-server[data-status="error"] .mcp-server-status {
+	color: var(--warm);
+}
+
+/* ─── Tool list ──────────────────────────────────────────────────────────── */
+.mcp-tools {
+	margin-top: 0.4rem;
+	padding-left: 1rem;
+}
+
+.mcp-tools summary {
+	font-size: 11px;
+	color: var(--muted);
+	cursor: pointer;
+	list-style: none;
+	transition: color 150ms ease;
+}
+
+.mcp-tools summary::-webkit-details-marker {
+	display: none;
+}
+
+/* One glyph, rotated — swapping the character would defeat the transition and
+   depends on the font covering both triangles. */
+.mcp-tools summary::before {
+	content: "▸";
+	display: inline-block;
+	margin-right: 0.25rem;
+	transition: transform 150ms ease;
+}
+
+.mcp-tools[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.mcp-tools summary::before {
+		transition: none;
+	}
+}
+
+.mcp-tools summary:hover {
+	color: var(--text);
+}
+
+.mcp-tools summary:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+.mcp-tool-list {
+	list-style: none;
+	margin: 0.35rem 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+
+.mcp-tool {
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+
+.mcp-tool code {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--cold);
+	word-break: break-all;
+}
+
+.mcp-tool-description {
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--muted);
+	/* Server-supplied descriptions can be paragraphs; two lines is enough to
+	   identify a tool, and the full text is in the model's context anyway. */
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+/* ─── Add-server form ────────────────────────────────────────────────────── */
+.mcp-add > summary {
+	font-size: 12px;
+	color: var(--cold);
+	cursor: pointer;
+	list-style: none;
+	padding: 0.25rem 0;
+	transition: color 150ms ease;
+}
+
+.mcp-add > summary::-webkit-details-marker {
+	display: none;
+}
+
+.mcp-add > summary::before {
+	content: "+ ";
+}
+
+.mcp-add > summary:hover {
+	color: var(--text);
+}
+
+.mcp-add > summary:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+.mcp-add form {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+
+.mcp-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+
+.mcp-field > span {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--muted);
+}
+
+.mcp-field > span em {
+	font-style: normal;
+	text-transform: none;
+	letter-spacing: 0;
+	opacity: 0.7;
+}
+
+.mcp-field input,
+.mcp-field textarea {
+	width: 100%;
+	padding: 0.4rem 0.5rem;
+	background: var(--graphite-700);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	color: var(--text);
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.4;
+	transition: all 150ms ease;
+}
+
+.mcp-field textarea {
+	resize: vertical;
+	min-height: 2.5rem;
+}
+
+.mcp-field input:hover,
+.mcp-field textarea:hover {
+	border-color: var(--cold);
+}
+
+.mcp-field input:focus-visible,
+.mcp-field textarea:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 1px;
+	border-color: var(--cold);
+}
+
+.mcp-field input:disabled,
+.mcp-field textarea:disabled {
+	background: var(--graphite-800);
+	color: var(--muted);
+	cursor: not-allowed;
+}
+
+.mcp-note {
+	margin: 0;
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--muted);
+}
+
+.mcp-form-error {
+	margin: 0;
+	padding: 0.4rem 0.5rem;
+	background: rgba(251, 113, 133, 0.1);
+	border-left: 2px solid var(--warm);
+	border-radius: 2px;
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--warm);
+}
+
+#mcp-add-submit {
+	padding: 0.45rem 0.75rem;
+	background: var(--cold);
+	border: none;
+	border-radius: 4px;
+	color: var(--graphite-900);
+	font-family: var(--font-body);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: all 150ms ease;
+}
+
+#mcp-add-submit:hover:not(:disabled) {
+	background: #0ea5e9;
+}
+
+#mcp-add-submit:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 2px;
+}
+
+#mcp-add-submit:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+/* ─── Error-details dialog ───────────────────────────────────────────────── */
+.mcp-error-dialog {
+	width: min(560px, calc(100vw - 2rem));
+	max-height: min(80vh, 640px);
+	padding: 1.25rem;
+	background: var(--graphite-800);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	color: var(--text);
+	font-family: var(--font-body);
+	overflow-y: auto;
+}
+
+.mcp-error-dialog::backdrop {
+	background: rgba(12, 14, 19, 0.7);
+}
+
+.mcp-error-dialog header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1rem;
+}
+
+.mcp-error-dialog h2 {
+	margin: 0;
+	font-family: var(--font-display);
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--warm);
+}
+
+#mcp-error-close {
+	padding: 0.2rem 0.45rem;
+	background: transparent;
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	color: var(--muted);
+	font-size: 12px;
+	cursor: pointer;
+	transition: all 150ms ease;
+}
+
+#mcp-error-close:hover {
+	background: var(--graphite-700);
+	color: var(--text);
+}
+
+#mcp-error-close:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 2px;
+}
+
+.mcp-error-meta {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0.3rem 0.75rem;
+	margin: 0 0 1rem;
+	font-size: 12px;
+}
+
+.mcp-error-meta dt {
+	font-family: var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--muted);
+}
+
+.mcp-error-meta dd {
+	margin: 0;
+	font-family: var(--font-mono);
+	color: var(--text);
+	word-break: break-all;
+}
+
+.mcp-error-message {
+	margin: 0 0 0.75rem;
+	padding: 0.6rem 0.75rem;
+	background: var(--graphite-900);
+	border-left: 2px solid var(--warm);
+	border-radius: 2px;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.mcp-error-hint {
+	margin: 0 0 0.75rem;
+	padding: 0.6rem 0.75rem;
+	background: rgba(56, 189, 248, 0.08);
+	border-left: 2px solid var(--cold);
+	border-radius: 2px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text);
+}
+
+.mcp-error-stack summary {
+	font-size: 12px;
+	color: var(--muted);
+	cursor: pointer;
+	padding: 0.25rem 0;
+}
+
+.mcp-error-stack summary:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+.mcp-error-stack pre {
+	margin: 0.35rem 0 0;
+	padding: 0.6rem 0.75rem;
+	max-height: 240px;
+	overflow: auto;
+	background: var(--graphite-900);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--muted);
+	white-space: pre;
 }
