@@ -77,6 +77,18 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0037 | Example: Agent-memory plugin      | [x]    |
 | 0038 | Example: RAG plugin (both shapes) | [x]    |
 
+Note on plugin activation vs. TASK_0034/TASK_0035, which all landed independently
+and are complementary rather than overlapping:
+
+- `getContributions(key)` (TASK_0034) reads a **capability-object key**
+  (`retriever`, `memoryStore`, …) across plugins.
+- `listPlugins()` (activation) reports what each plugin **registered into the
+  registries** — tools, commands, drivers, MCP servers, event handlers — plus
+  its enabled state, backed by the kernel's ownership ledger.
+- `dispose()` (TASK_0035) is whole-kernel teardown. Activation deliberately does
+  not unregister anything: it hides a plugin's contributions so the toggle stays
+  reversible and cannot fail. Per-plugin teardown is still unimplemented.
+
 ## Phase 6 — Interop, validation, docs
 
 | Task | Title                                        | Status |

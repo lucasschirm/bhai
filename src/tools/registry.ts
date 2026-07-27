@@ -153,6 +153,26 @@ export class ToolRegistry {
 	constructor(private readonly bus: EventBus) {}
 
 	/**
+	 * Predicate deciding whether a tool name is currently visible, injected by
+	 * the kernel to implement plugin activation. `undefined` (the default) means
+	 * no gating — a registry constructed without a kernel behaves exactly as it
+	 * did before plugin activation existed.
+	 *
+	 * This does NOT breach the registry's origin-agnosticism (see the class
+	 * doc): the registry still knows nothing about plugins, local-vs-MCP, or why
+	 * a name might be filtered. It knows only that some caller can veto a name.
+	 * The kernel owns the ownership ledger that answers the question, which is
+	 * also what lets MCP-registered tools be gated here without
+	 * `mcp-integration.ts` growing any activation logic of its own.
+	 */
+	private isActive: ((toolName: string) => boolean) | undefined
+
+	/** Install the visibility predicate. Called once by the `BHAI` constructor. */
+	setActivePredicate(predicate: (toolName: string) => boolean): void {
+		this.isActive = predicate
+	}
+
+	/**
 	 * Add (or replace) a tool — object form (§ 6, § 9.1). Validates `def.name`,
 	 * stores the definition, and fires `tool.registered` with `{ tool: def }`.
 	 */
@@ -272,7 +292,10 @@ export class ToolRegistry {
 	 * here.
 	 */
 	listTools(filter?: ToolFilter): BHAIToolDefinition[] {
-		const all = Array.from(this.tools.values())
+		// Plugin activation gate runs BEFORE the `filter` subset below: a tool
+		// whose contributing plugin is deactivated is not merely filtered out of
+		// this call's result, it is not part of the visible catalogue at all.
+		const all = this.activeEntries()
 		if (!filter) {
 			return all
 		}
@@ -302,15 +325,29 @@ export class ToolRegistry {
 	 * addition consistent with how `listTools()` exposes stored records.
 	 */
 	get(name: string): BHAIToolDefinition | undefined {
+		if (this.isActive !== undefined && !this.isActive(name)) return undefined
 		return this.tools.get(name)
 	}
 
 	/**
-	 * Number of currently-registered tools. Convenience accessor; not part of
+	 * Tools currently visible: every registered tool when no predicate is
+	 * installed, otherwise only those whose name the predicate accepts.
+	 * Preserves registration order.
+	 */
+	private activeEntries(): BHAIToolDefinition[] {
+		const all = Array.from(this.tools.values())
+		const predicate = this.isActive
+		if (predicate === undefined) return all
+		return all.filter((def) => predicate(def.name))
+	}
+
+	/**
+	 * Number of currently-visible tools. Convenience accessor; not part of
 	 * § 6's named kernel API.
 	 */
 	get size(): number {
-		return this.tools.size
+		if (this.isActive === undefined) return this.tools.size
+		return this.activeEntries().length
 	}
 
 	/**

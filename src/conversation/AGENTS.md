@@ -275,6 +275,14 @@ The test suite in `conversation.test.ts` verifies all acceptance criteria:
 
 ## Conventions
 
+### Per-conversation plugin activation
+
+- `system-prompt.ts`'s standalone `Conversation` resolver also carries per-conversation plugin activation: `onStart(handler, owner?)` attributes a `start` handler to a plugin, and `enablePlugin`/`disablePlugin`/`resetPlugin` form a tri-state override (`resetPlugin` returns to inheriting the kernel) layered over `BHAI`'s global state.
+- **This module does not import `src/core/`.** `Conversation` reaches global activation through the structural `PluginActivationSource` interface (`isPluginEnabled` + `listPlugins`), which `BHAI` satisfies without declaring it. Keep it that way — a hard import would couple the two subtrees that `src/index.ts` already has to alias around.
+- **Activation is snapshotted, not live.** The resolver caches its result for the conversation's lifetime, so a toggle made after the conversation has started changes nothing until `restart()` is called. That is deliberate: a running conversation's system prompt must not mutate underneath it. `restart()` re-runs every handler, so `start` handlers must tolerate running more than once.
+- A handler registered without an `owner` is host-owned and always runs, whatever is disabled.
+- **Scope boundary vs. `BHAIConversationImpl`.** The per-conversation override API lives on the standalone `Conversation` resolver, not on `BHAIConversationImpl`. A *global* `bh.disablePlugin()` does still reach real conversations: `dispatchConversationEvent()` mirrors onto the framework bus, and handlers registered through `bh.on()` carry an owner tag that the framework `EventBus` gates. What is not wired is a per-conversation override on `BHAIConversationImpl` — giving it one means threading an overrides map through `ensureStarted(conversation, bh, …)` and the mirror, which is a deliberate follow-up, not an oversight.
+
 ### Formatting and Style
 
 - **Indentation**: tabs (Biome configuration)

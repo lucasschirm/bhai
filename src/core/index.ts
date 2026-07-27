@@ -12,6 +12,8 @@ export {
 	type BHAIPluginFactory,
 	type BHAIPluginLike,
 	type ConfigChangedPayload,
+	type PluginContributions,
+	type PluginStatus,
 } from "./bhai.js"
 export { CommandRegistry } from "./commands.js"
 // Open message-field contract — plugin-declared accessors over `message.meta`.

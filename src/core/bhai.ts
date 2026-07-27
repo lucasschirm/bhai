@@ -218,6 +218,49 @@ const ALLOWED_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * Keys of `index` owned by `owner`, in insertion (registration) order. Used to
+ * turn the kernel's reverse ownership indexes back into the per-plugin forward
+ * view {@link PluginStatus} reports.
+ */
+function keysOwnedBy(index: Map<string, string>, owner: string): string[] {
+	const out: string[] = []
+	for (const [key, value] of index) {
+		if (value === owner) out.push(key)
+	}
+	return out
+}
+
+/**
+ * Everything a single plugin contributed to the kernel's registries, as
+ * reported by {@link BHAI.listPlugins}.
+ *
+ * Only *attributed* contributions appear here — see {@link BHAI.runAs} for the
+ * one case where a plugin's registration can land unattributed.
+ */
+export interface PluginContributions {
+	/** Tool names registered by this plugin, including MCP-discovered ones. */
+	readonly tools: readonly string[]
+	/** '/slash'-command names registered by this plugin. */
+	readonly commands: readonly string[]
+	/** Driver ids registered by this plugin. */
+	readonly drivers: readonly string[]
+	/** MCP server names attached by this plugin. */
+	readonly mcpServers: readonly string[]
+	/** How many event handlers this plugin registered via `bh.on()`. */
+	readonly eventHandlers: number
+}
+
+/** One registered plugin's activation state and contributions (§ 7). */
+export interface PluginStatus {
+	/** The plugin's name, as normalized at `use()` time. */
+	name: string
+	/** `false` only after an explicit {@link BHAI.disablePlugin}. Defaults to `true`. */
+	enabled: boolean
+	/** What this plugin contributed. All-empty for a plugin that registered nothing. */
+	contributions: PluginContributions
+}
+
+/**
  * BHAI is the kernel class — the framework entry point every host
  * instantiates and every plugin registers itself onto.
  *
@@ -338,6 +381,11 @@ export class BHAI {
 	readonly toolRegistrar: ToolRegistrar = {
 		register: (toolDef) => {
 			this.toolRegistry.register(toolDef)
+			// Attribute here too, not just in `addTool`: `@Tool`-decorated methods
+			// (form 3) reach the registry through this seam and would otherwise be
+			// unowned, making decorated plugins the one form that cannot be
+			// deactivated.
+			this.attribute(this.toolOwners, toolDef.name)
 		},
 	}
 
@@ -371,6 +419,39 @@ export class BHAI {
 	 */
 	private readonly mcpRegistry: McpRegistry = new McpRegistry(this.bus, this.toolRegistry)
 
+	// ---------------------------------------------------------------------------
+	// Plugin activation (§ 7) — ownership ledger + enabled/disabled state.
+	//
+	// Deactivating a plugin means hiding everything it contributed, so the kernel
+	// has to know which plugin contributed what. The registries are deliberately
+	// origin-agnostic (see `src/tools/AGENTS.md`), so the attribution lives HERE,
+	// in reverse indexes keyed by the same key each registry uses. Each registry
+	// is then handed a predicate (see the constructor) and filters its own read
+	// paths without learning anything about plugins.
+	//
+	// Reverse indexes are the single source of truth; `listPlugins()` walks them
+	// to build the forward per-plugin view on demand. Keeping a second forward
+	// map in sync would only create a way for the two to disagree.
+	// ---------------------------------------------------------------------------
+
+	/** Plugins explicitly deactivated. Absence means enabled — that is the default. */
+	private readonly disabledPlugins: Set<string> = new Set()
+
+	/** tool name → owning plugin. Tools absent from this map are unowned. */
+	private readonly toolOwners: Map<string, string> = new Map()
+
+	/** command name → owning plugin. */
+	private readonly commandOwners: Map<string, string> = new Map()
+
+	/** driver id → owning plugin. */
+	private readonly driverOwners: Map<string, string> = new Map()
+
+	/** MCP server name → owning plugin. */
+	private readonly mcpOwners: Map<string, string> = new Map()
+
+	/** plugin name → number of event handlers it registered via `bh.on()`. */
+	private readonly eventHandlerCounts: Map<string, number> = new Map()
+
 	/**
 	 * Plugin-declared message fields — the open message contract. Backs
 	 * {@link defineMessageField} and is read by the conversation layer's message
@@ -381,13 +462,38 @@ export class BHAI {
 	private readonly messageFields: MessageFieldRegistry = new MessageFieldRegistry()
 
 	/**
-	 * The merged `modelSource` hook results, populated by
-	 * {@link resolveModelSourceHooks} during `bh.init()` (§ 8.5 step 2).
-	 * `undefined` until `init()` runs; merged into `bh.listModels()` alongside
-	 * the driver registry's catalogue. Stored on the instance (not globally)
-	 * so multiple `BHAI` instances coexist without collision.
+	 * `modelSource` hook results, kept per contributing plugin rather than as one
+	 * flat list so a deactivated plugin's models can drop out of `listModels()`.
+	 * `owner` is `undefined` for a hook whose plugin could not be determined.
 	 */
-	private modelSourceModels: ModelInfo[] | undefined
+	private readonly modelSourceContributions: Array<{
+		owner: string | undefined
+		models: ModelInfo[]
+	}> = []
+
+	/**
+	 * The plugin currently being set up or initialized. Every registration made
+	 * while this is set is attributed to that plugin.
+	 *
+	 * ASSUMPTION — the precise scope of this ambient window. It is exact for:
+	 *   - anything registered synchronously inside a form-1 factory's body, and
+	 *   - the ENTIRE awaited duration of a form-2 `initialize` hook, because
+	 *     `init()` awaits hooks strictly sequentially and nothing else touches
+	 *     the kernel in between.
+	 * It does NOT cover one case: a form-1 factory that registers after its own
+	 * first `await`. `use()` deliberately does not await `setup()` (§ 7.3 step 1),
+	 * so the window closes when the factory first suspends, and a later
+	 * registration lands unattributed. Such a registration is treated as
+	 * host-owned and is never gated — which is the safe direction to fail, since
+	 * it means a plugin can at worst leave something switched permanently on,
+	 * never silently break an unrelated host registration. Plugins that register
+	 * asynchronously should wrap the registration in {@link runAs}.
+	 *
+	 * MCP attachment does not rely on this window at all — `addMcp()` registers
+	 * its tools after an `await`, so attribution there is reported explicitly by
+	 * `resolveGetMcpsHooks`'s `onAttached` callback instead.
+	 */
+	private attributionScope: string | undefined
 
 	/**
 	 * Accessor for conversation-store operations (TASK_0029, § 11.4).
@@ -411,6 +517,14 @@ export class BHAI {
 
 	constructor(options?: BHAIHostOptions) {
 		this.options = options ?? {}
+		// Hand every registry a view onto activation state. Each registry filters
+		// its own read paths; none of them learns what a plugin is.
+		this.toolRegistry.setActivePredicate((name) => this.isOwnerActive(this.toolOwners.get(name)))
+		this.commandRegistry.setActivePredicate((name) =>
+			this.isOwnerActive(this.commandOwners.get(name)),
+		)
+		this.driverRegistry.setActivePredicate((id) => this.isOwnerActive(this.driverOwners.get(id)))
+		this.bus.setOwnerActivePredicate((owner) => this.isOwnerActive(owner))
 		// The built-in `think` field. Registered unconditionally (not gated on
 		// `parseThink`) because message fields are installed at construction
 		// time, long before any conversation and its options exist — and because
@@ -467,8 +581,155 @@ export class BHAI {
 		// For form 1, `setup` IS the factory, so this is the call that
 		// actually runs the user's plugin body. For form 2, `setup` is a
 		// no-op stub (capability hooks run at init()/dispose() time, not now).
-		void normalized.setup(this)
+		//
+		// `runAs` opens the attribution window so everything the factory
+		// registers is credited to this plugin. Because we do not await, the
+		// window closes when the factory first suspends — see the ASSUMPTION on
+		// `attributionScope`.
+		this.runAs(normalized.name, () => {
+			void normalized.setup(this)
+		})
 		return this
+	}
+
+	// ---------------------------------------------------------------------------
+	// Plugin activation (§ 7).
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Whether `owner`'s contributions are currently live. Unowned contributions
+	 * (`owner === undefined`) are always live: they belong to the host, not to
+	 * any plugin, so nothing can switch them off.
+	 */
+	private isOwnerActive(owner: string | undefined): boolean {
+		if (owner === undefined) return true
+		return !this.disabledPlugins.has(owner)
+	}
+
+	/**
+	 * Reactivate a previously deactivated plugin. Idempotent — enabling an
+	 * already-enabled plugin does nothing.
+	 *
+	 * Reactivation is instant and cannot fail: nothing was ever unregistered, so
+	 * there is no setup to re-run and no I/O to retry. See
+	 * {@link disablePlugin} for what "deactivated" does and does not cover.
+	 *
+	 * @throws {Error} if no plugin named `name` has been registered.
+	 */
+	enablePlugin(name: string): this {
+		this.assertRegistered("enablePlugin", name)
+		this.disabledPlugins.delete(name)
+		return this
+	}
+
+	/**
+	 * Deactivate a registered plugin: its tools, '/slash'-commands, drivers,
+	 * models, MCP-discovered tools and event handlers all stop being visible and
+	 * stop running, kernel-wide, until {@link enablePlugin} is called.
+	 *
+	 * Deactivation is REVERSIBLE and REGISTRATION-PRESERVING. Nothing is torn
+	 * down; every read path simply skips the plugin's contributions. Two
+	 * consequences worth being explicit about:
+	 *
+	 *   - An MCP server the plugin attached STAYS CONNECTED. Its transport is
+	 *     live, re-sync keeps running, and server-initiated traffic keeps
+	 *     arriving — only its tools stop being listed and callable. Genuine
+	 *     detachment needs per-plugin teardown (TASK_0035), which does not exist
+	 *     yet; inventing it here would also make re-enabling a plugin an I/O
+	 *     operation that can fail, which `enablePlugin` deliberately is not.
+	 *   - A driver the plugin registered stays registered; its models just stop
+	 *     appearing in `listModels()`.
+	 *
+	 * A plugin's `initialize`/`dispose` hooks are NOT re-run by either direction
+	 * of the toggle — `dispose()` remains the whole-kernel teardown path.
+	 *
+	 * @throws {Error} if no plugin named `name` has been registered. This is
+	 *   deliberately stricter than `use()`'s silent duplicate-name no-op and
+	 *   `removeTool()`'s silent missing-name no-op: those two are idempotent
+	 *   "already in the requested state" operations, whereas disabling a name
+	 *   that does not exist is a request that cannot be satisfied — almost
+	 *   always a typo, and exactly the failure mode `ALLOWED_CAPABILITY_KEYS`
+	 *   exists to catch early.
+	 */
+	disablePlugin(name: string): this {
+		this.assertRegistered("disablePlugin", name)
+		this.disabledPlugins.add(name)
+		return this
+	}
+
+	/**
+	 * Whether `name` is currently active. Unregistered names report `false`
+	 * rather than throwing — this is a query, not a state change, and "is that
+	 * plugin contributing right now?" has a truthful answer for a name that was
+	 * never registered.
+	 */
+	isPluginEnabled(name: string): boolean {
+		if (!this.registeredNames.has(name)) return false
+		return !this.disabledPlugins.has(name)
+	}
+
+	/**
+	 * Every registered plugin, in `use()` registration order, with its activation
+	 * state and the contributions attributed to it.
+	 *
+	 * This is the read side of the activation interface — the kernel fires no
+	 * `plugin.enabled`/`plugin.disabled` events, because § 8.1 defines no such
+	 * rows and this codebase does not invent events the spec omits (see
+	 * `commands.ts`'s matching note on `command.registered`). Hosts that need to
+	 * render plugin state read it from here.
+	 */
+	listPlugins(): PluginStatus[] {
+		return this.plugins.map((plugin) => ({
+			name: plugin.name,
+			enabled: !this.disabledPlugins.has(plugin.name),
+			contributions: {
+				tools: keysOwnedBy(this.toolOwners, plugin.name),
+				commands: keysOwnedBy(this.commandOwners, plugin.name),
+				drivers: keysOwnedBy(this.driverOwners, plugin.name),
+				mcpServers: keysOwnedBy(this.mcpOwners, plugin.name),
+				eventHandlers: this.eventHandlerCounts.get(plugin.name) ?? 0,
+			},
+		}))
+	}
+
+	/**
+	 * Run `fn` with every registration it makes attributed to `pluginName`.
+	 *
+	 * The escape hatch for the one gap in ambient attribution documented on
+	 * {@link attributionScope}: a plugin that registers asynchronously, after
+	 * its `setup()` has already returned, wraps the registration in this so its
+	 * contributions are still gated with the rest of the plugin's.
+	 *
+	 * Restores the previous scope on the way out (including on throw), so nesting
+	 * is safe. Only registrations made SYNCHRONOUSLY inside `fn` are attributed —
+	 * this is the same synchronous window `setup()` gets, not a fix for it.
+	 */
+	runAs<T>(pluginName: string, fn: () => T): T {
+		const previous = this.attributionScope
+		this.attributionScope = pluginName
+		try {
+			return fn()
+		} finally {
+			this.attributionScope = previous
+		}
+	}
+
+	/** Shared guard for the two state-changing activation methods. */
+	private assertRegistered(method: string, name: string): void {
+		if (!this.registeredNames.has(name)) {
+			throw new Error(`bh.${method}(): no plugin named "${name}" is registered`)
+		}
+	}
+
+	/**
+	 * Record `key` in `index` as owned by the plugin currently in scope. A no-op
+	 * outside any plugin scope, which is what leaves host-level registrations
+	 * unowned and therefore permanently active.
+	 */
+	private attribute(index: Map<string, string>, key: string): void {
+		if (this.attributionScope !== undefined) {
+			index.set(key, this.attributionScope)
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -487,7 +748,11 @@ export class BHAI {
 	 * {@link EventBus} instance.
 	 */
 	on<Payload>(event: string, handler: Handler<Payload>): Unsubscribe {
-		return this.bus.on(event, handler)
+		const owner = this.attributionScope
+		if (owner !== undefined) {
+			this.eventHandlerCounts.set(owner, (this.eventHandlerCounts.get(owner) ?? 0) + 1)
+		}
+		return this.bus.on(event, handler, owner)
 	}
 
 	/**
@@ -540,16 +805,31 @@ export class BHAI {
 		for (const plugin of this.plugins) {
 			const toolDefs = plugin.capabilities?.tools
 			if (toolDefs && Array.isArray(toolDefs)) {
-				for (const toolDef of toolDefs) {
-					this.addTool(toolDef)
-				}
+				// `runAs` so declared tools are attributed to their plugin exactly
+				// like imperatively-registered ones. Without it, the `tools:` key
+				// would be the one registration path producing ungatable tools.
+				this.runAs(plugin.name, () => {
+					for (const toolDef of toolDefs) {
+						this.addTool(toolDef as BHAIToolDefinition)
+					}
+				})
 			}
 		}
 
 		for (const plugin of this.plugins) {
 			const hook = plugin.capabilities?.initialize
 			if (hook) {
-				await hook({ bh: this })
+				// Attribute everything this hook registers to its plugin. Unlike the
+				// `setup()` window in `use()`, this one is exact even for an async
+				// hook: hooks are awaited strictly sequentially here, so nothing else
+				// can register while `attributionScope` is set.
+				const previous = this.attributionScope
+				this.attributionScope = plugin.name
+				try {
+					await hook({ bh: this })
+				} finally {
+					this.attributionScope = previous
+				}
 			}
 		}
 
@@ -584,11 +864,13 @@ export class BHAI {
 			if (caps?.getMcps) {
 				getMcpsHooks.push({
 					getMcps: caps.getMcps as () => Promise<McpServerConfig[]>,
+					owner: plugin.name,
 				})
 			}
 			if (caps?.modelSource) {
 				modelSourceHooks.push({
 					modelSource: caps.modelSource as () => Promise<ModelInfo[]>,
+					owner: plugin.name,
 				})
 			}
 		}
@@ -597,8 +879,15 @@ export class BHAI {
 		// it (a sampling-capable server could be attached by a getMcps hook
 		// and immediately issue a sampling/createMessage request — rare, but
 		// ordering modelSource first is the safe choice).
-		this.modelSourceModels = await resolveModelSourceHooks(modelSourceHooks)
-		await resolveGetMcpsHooks(getMcpsHooks, this.mcpRegistry)
+		// The `onResolved`/`onAttached` callbacks record which plugin contributed
+		// what, so a later `disablePlugin()` can drop those models and MCP tools.
+		// Neither resolver interprets `owner` — they only hand it back.
+		await resolveModelSourceHooks(modelSourceHooks, (hook, models) => {
+			this.modelSourceContributions.push({ owner: hook.owner, models })
+		})
+		await resolveGetMcpsHooks(getMcpsHooks, this.mcpRegistry, undefined, (hook, handle) => {
+			this.attributeMcp(hook.owner, handle)
+		})
 
 		// TASK_0029 (§ 11.4): Wire up conversation-store auto-save and initialize
 		// the conversations accessor. This happens after all hook resolution so the
@@ -723,8 +1012,10 @@ export class BHAI {
 		this.assertNotDisposed()
 		if (typeof defOrName === "string") {
 			this.toolRegistry.addTool(defOrName, parameters as JSONSchema, execute as ToolExecute)
+			this.attribute(this.toolOwners, defOrName)
 		} else {
 			this.toolRegistry.addTool(defOrName)
+			this.attribute(this.toolOwners, defOrName.name)
 		}
 	}
 
@@ -735,6 +1026,9 @@ export class BHAI {
 	 */
 	removeTool(name: string): void {
 		this.toolRegistry.removeTool(name)
+		// Drop the attribution too: the name is free again, and a later
+		// registration under it must not inherit the old owner's activation state.
+		this.toolOwners.delete(name)
 	}
 
 	/**
@@ -757,6 +1051,7 @@ export class BHAI {
 	addDriver(driver: BHAIDriver): void {
 		this.assertNotDisposed()
 		this.driverRegistry.addDriver(driver)
+		this.attribute(this.driverOwners, driver.id)
 	}
 
 	/**
@@ -776,8 +1071,15 @@ export class BHAI {
 	 * legitimately call `listModels()` pre-init to inspect driver models).
 	 */
 	async listModels(): Promise<ModelInfo[]> {
+		// The driver half is already gated inside the registry by the predicate
+		// installed in the constructor; the hook half is gated here, where the
+		// per-plugin breakdown lives.
 		const driverModels = await this.driverRegistry.listModels()
-		const hookModels = this.modelSourceModels ?? []
+		const hookModels: ModelInfo[] = []
+		for (const contribution of this.modelSourceContributions) {
+			if (!this.isOwnerActive(contribution.owner)) continue
+			hookModels.push(...contribution.models)
+		}
 		return [...driverModels, ...hookModels]
 	}
 
@@ -878,6 +1180,7 @@ export class BHAI {
 	addCommand(name: string, def: BHAICommandDefinition): void {
 		this.assertNotDisposed()
 		this.commandRegistry.addCommand(name, def)
+		this.attribute(this.commandOwners, name)
 	}
 
 	/**
@@ -917,6 +1220,17 @@ export class BHAI {
 	 *
 	 * Call it from a plugin's `setup()` or `initialize` hook. Fields registered
 	 * after messages already exist do not retroactively appear on them.
+	 *
+	 * NOT SUBJECT TO PLUGIN ACTIVATION (the one registration path that isn't —
+	 * deliberate, not an oversight). A message field is a *data-shape* contract,
+	 * not a behavior: the accessor only exposes a key that already lives in
+	 * `meta` and already round-trips through snapshots. Dropping the accessor
+	 * when its plugin is disabled would make `message.myField` read `undefined`
+	 * on messages whose `meta.myField` is populated — silently changing how
+	 * already-persisted conversations deserialize, and breaking re-enabling as a
+	 * pure no-op. This is the same reasoning that registers the built-in `think`
+	 * field unconditionally (see the constructor). Gate the plugin's *handlers*
+	 * instead; the field stays.
 	 *
 	 * @param name       Property name to expose on every message.
 	 * @param definition Backing `meta` key and default-value overrides.
@@ -968,7 +1282,32 @@ export class BHAI {
 	 */
 	async addMcp(config: McpServerConfig, options?: unknown): Promise<McpHandle> {
 		this.assertNotDisposed()
-		return this.mcpRegistry.addMcp(config, options)
+		// Capture the scope BEFORE awaiting: `attributionScope` is a synchronous
+		// ambient window and does not survive the await below.
+		const owner = this.attributionScope
+		const handle = await this.mcpRegistry.addMcp(config, options)
+		this.attributeMcp(owner, handle)
+		return handle
+	}
+
+	/**
+	 * Attribute an attached MCP server — and every tool its discovery registered
+	 * — to `owner`. A no-op when `owner` is `undefined` (a host-level attach).
+	 *
+	 * The tools are found by the `mcp__<server>__` name prefix (the convention
+	 * established in TASK_0011) rather than by watching the registry, because the
+	 * MCP client writes into the shared {@link ToolRegistry} directly and the
+	 * kernel never sees those individual `addTool` calls.
+	 */
+	private attributeMcp(owner: string | undefined, handle: McpHandle): void {
+		if (owner === undefined) return
+		this.mcpOwners.set(handle.serverName, owner)
+		const prefix = `mcp__${handle.serverName}__`
+		for (const tool of this.toolRegistry.listTools()) {
+			if (tool.name.startsWith(prefix)) {
+				this.toolOwners.set(tool.name, owner)
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------

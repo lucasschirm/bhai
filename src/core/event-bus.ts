@@ -119,6 +119,33 @@ export class EventBus {
 	private readonly handlers: Map<string, Array<Handler<unknown>>> = new Map()
 
 	/**
+	 * Owner (plugin name) of each registered handler, for plugin activation
+	 * gating. Only handlers registered with an explicit `owner` appear here;
+	 * everything else is unowned and therefore never gated.
+	 *
+	 * A `WeakMap` keyed by the handler function keeps the `handlers` arrays and
+	 * the `indexOf`-based unsubscribe above untouched — the alternative,
+	 * restructuring the arrays into `{ handler, owner }` records, would ripple
+	 * through every read path for no behavioral gain.
+	 *
+	 * ASSUMPTION: if the SAME function reference is registered by two different
+	 * owners, the second registration's owner overwrites the first, and both
+	 * registrations are then gated as the second owner. Handlers are
+	 * overwhelmingly fresh closures or `.bind()` results (both fresh
+	 * references), so this is an accepted, documented edge rather than a reason
+	 * to give up the `WeakMap`.
+	 */
+	private readonly handlerOwners: WeakMap<Handler<unknown>, string> = new WeakMap()
+
+	/**
+	 * Predicate deciding whether an owner's handlers currently run, injected by
+	 * the kernel via {@link setOwnerActivePredicate}. `undefined` (the default)
+	 * means no gating at all — a standalone bus with no kernel behaves exactly
+	 * as it did before plugin activation existed.
+	 */
+	private isOwnerActive: ((owner: string) => boolean) | undefined
+
+	/**
 	 * Single global dispatch queue per bus instance. Every `emit()`/`dispatch()`
 	 * schedules onto this chain, so dispatches serialize across all event names
 	 * — not per-event-name. This is the § 8.4 rule 2 guarantee: "Two dispatches
@@ -133,13 +160,21 @@ export class EventBus {
 	 * `on()` accepts any event name, including reserved kernel names — plugins
 	 * observe kernel events by subscribing to them. Only the public `emit()`
 	 * restricts which names a plugin may fire; subscription is unrestricted.
+	 *
+	 * `owner` optionally attributes this handler to a plugin, so the kernel can
+	 * skip it while that plugin is deactivated (see
+	 * {@link setOwnerActivePredicate}). Omitting it — which every pre-existing
+	 * caller does — leaves the handler unowned and permanently active.
 	 */
-	on<Payload>(event: string, handler: Handler<Payload>): Unsubscribe {
+	on<Payload>(event: string, handler: Handler<Payload>, owner?: string): Unsubscribe {
 		const list = this.handlers.get(event)
 		if (list) {
 			list.push(handler as Handler<unknown>)
 		} else {
 			this.handlers.set(event, [handler as Handler<unknown>])
+		}
+		if (owner !== undefined) {
+			this.handlerOwners.set(handler as Handler<unknown>, owner)
 		}
 		return () => {
 			const arr = this.handlers.get(event)
@@ -148,6 +183,30 @@ export class EventBus {
 			if (idx >= 0) arr.splice(idx, 1)
 			if (arr.length === 0) this.handlers.delete(event)
 		}
+	}
+
+	/**
+	 * Install the predicate that decides whether an owned handler runs.
+	 *
+	 * Called once by the `BHAI` constructor to hand the bus a view onto plugin
+	 * activation state. The bus deliberately does not import anything about
+	 * plugins — it only knows "some handlers carry an owner string, and some
+	 * predicate says whether that string is currently active" — which keeps this
+	 * class as framework-agnostic as its class doc claims.
+	 */
+	setOwnerActivePredicate(predicate: (owner: string) => boolean): void {
+		this.isOwnerActive = predicate
+	}
+
+	/**
+	 * Whether `handler` should run right now: true when it is unowned, or when
+	 * its owner is active per the injected predicate.
+	 */
+	private isHandlerActive(handler: Handler<unknown>): boolean {
+		if (this.isOwnerActive === undefined) return true
+		const owner = this.handlerOwners.get(handler)
+		if (owner === undefined) return true
+		return this.isOwnerActive(owner)
 	}
 
 	/**
@@ -267,6 +326,13 @@ export class EventBus {
 		const blockable = options?.blockable === true
 
 		for (const handler of list) {
+			// Plugin activation gate. A handler belonging to a deactivated plugin
+			// is skipped entirely and does NOT count toward `handled` — that field
+			// counts handlers that ran, and this one did not. (A throwing handler
+			// still counts, per the doc above, because it did run.)
+			if (!this.isHandlerActive(handler)) {
+				continue
+			}
 			try {
 				const result = await (handler as Handler<Payload>)(current)
 				handled += 1
