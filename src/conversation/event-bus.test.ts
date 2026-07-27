@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { EventBus } from "../../src/conversation/event-bus"
+import { EventBus } from "./event-bus.js"
 
 type Events = {
 	count: number

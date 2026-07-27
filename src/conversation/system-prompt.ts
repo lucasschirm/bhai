@@ -1,4 +1,4 @@
-import { EventBus } from "./event-bus"
+import { EventBus } from "./event-bus.js"
 
 /**
  * Sugar patch a `start` handler may return to influence the resolved system

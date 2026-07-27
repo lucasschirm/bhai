@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Conversation } from "../../src/conversation/system-prompt"
+import { Conversation } from "./system-prompt.js"
 
 describe("Conversation system-prompt resolution", () => {
 	it("uses the base prompt when no handlers are registered", () => {
