@@ -6,7 +6,7 @@ The kernel: the `BHAI` class (framework entry point, ARCHITECTURE.md § 6), the 
 
 ## Key files
 
-- `bhai.ts` — the `BHAI` class. Constructor + `use()` (TASK_0003), `on()`/`emit()` (TASK_0004), `init()`/`dispose()` (TASK_0005), `declareConfig`/`setConfig`/`getConfig` (TASK_0006), `addTool`/`removeTool`/`listTools` (TASK_0008), `addDriver`/`listModels` (TASK_0009), `addCommand`/`listCommands` (TASK_0010). Stubs for not-yet-implemented § 6 methods throw with a `TODO(TASK_XXXX)` comment naming the owner.
+- `bhai.ts` — the `BHAI` class. Constructor + `use()` (TASK_0003), `on()`/`emit()` (TASK_0004), `init()`/`dispose()` (TASK_0005), `declareConfig`/`setConfig`/`getConfig` (TASK_0006), `addTool`/`removeTool`/`listTools` (TASK_0008), `addDriver`/`listModels` (TASK_0009), `addCommand`/`listCommands` (TASK_0010), plus plugin activation: `enablePlugin`/`disablePlugin`/`isPluginEnabled`/`listPlugins`/`runAs`. Stubs for not-yet-implemented § 6 methods throw with a `TODO(TASK_XXXX)` comment naming the owner.
 - `event-bus.ts` — `EventBus` class (§ 8). Sequential awaited dispatch, patch chaining, blockable pipelines, reserved-namespace enforcement on public `emit()`, internal `dispatch()` bypass for kernel-originated events, global per-bus FIFO serialization.
 - `decorators.ts` — TC39 stage-3 decorators (`@Plugin`, `@On`, `@Tool`) for plugin form 3 (§ 7.2). Native decorators only — no `experimentalDecorators`.
 - `drivers.ts` — `DriverRegistry` (TASK_0009, § 10.1). Stores `BHAIDriver` instances keyed by `id`, fires `driver.registered`, merges `listModels()` across drivers. `modelSource` hook merge is TASK_0015's job (see seam comment).
@@ -16,6 +16,8 @@ The kernel: the `BHAI` class (framework entry point, ARCHITECTURE.md § 6), the 
 ## Conventions
 
 - **Stubs throw, never no-op**: an unimplemented § 6 method throws with `Error("bh.<method>(): not implemented — see TASK_XXXX")` so accidental use surfaces immediately.
+- **Plugin attribution is ambient and synchronous.** `bhai.ts` sets `attributionScope` around a plugin's `setup()` and around each `initialize` hook; every registration made in that window is credited to the plugin via the reverse ownership indexes (`toolOwners`, `commandOwners`, …). Registries never learn what a plugin is — each is handed a name predicate instead. Two consequences to preserve when touching this: **any new registration path must call `attribute()`** or its contributions become permanently ungatable, and **the window does not survive a form-1 factory's `await`** (`use()` does not await `setup()`), which is what `runAs()` exists to work around. MCP attachment does not use the window at all — it attributes explicitly, after the await, from the handle.
+- **Unowned means always on.** A registration made outside any plugin scope belongs to the host and is never gated. This is what keeps activation backward compatible, so do not "fix" unowned contributions by inventing a default owner.
 - **`ajv` is the only runtime dep** in this directory (config validation, TASK_0006). It's pure-JS with no environment bindings.
 - **Test accessors** (`__testPluginCount`, `__testHasPlugin`, `__testOption`) exist for kernel-internal invariant assertions; they are `@internal` and not part of § 6.
 - **PATH NOTE**: TASK specs say `src/kernel/`, but the repo convention is `src/core/` (established by TASK_0002). New kernel files go here, not in a separate `kernel/` dir.

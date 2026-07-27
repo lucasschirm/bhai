@@ -62,7 +62,16 @@ src/
 
 - **BHAI class** (`bhai.ts`): `use()`, `on()`/`emit()`, `init()`/`dispose()`,
   `declareConfig`/`setConfig`/`getConfig`, `addTool`/`removeTool`/`listTools`,
-  `addDriver`/`listModels`, `addCommand`/`listCommands`.
+  `addDriver`/`listModels`, `addCommand`/`listCommands`,
+  `enablePlugin`/`disablePlugin`/`isPluginEnabled`/`listPlugins`/`runAs`.
+- **Plugin activation** (`bhai.ts`): an ownership ledger attributes every
+  registration to the plugin that made it, and each registry is handed a
+  predicate that filters its read paths. Disabling a plugin hides its tools,
+  commands, drivers, models, MCP-discovered tools and event handlers, kernel-wide.
+  Deactivation is registration-preserving and reversible — nothing is torn down,
+  so an MCP server stays connected and only its tools stop being visible. Genuine
+  teardown remains TASK_0035. Contributions with no owning plugin (host-level
+  `addTool` and friends) are never gated.
 - **EventBus** (`event-bus.ts`): sequential awaited dispatch, patch chaining,
   blockable pipelines, reserved-namespace enforcement, global FIFO.
 - **Decorators** (`decorators.ts`): TC39 stage-3 `@Plugin`, `@On`, `@Tool`.
@@ -76,7 +85,9 @@ src/
 
 - **ToolRegistry** (`registry.ts`): single source of truth for all tools.
   Shadowing (replace, no `tool.removed`), `tool.registered`/`tool.removed`
-  events. Origin-agnostic (local vs. MCP invisible here).
+  events. Origin-agnostic (local vs. MCP invisible here) — the plugin-activation
+  gate is an injected name predicate, so the registry still learns nothing about
+  where a tool came from.
 
 ### MCP client (`src/plugins/mcp/`)
 

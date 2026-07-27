@@ -42,6 +42,22 @@ export class CommandRegistry {
 	private readonly commands: Map<string, BHAICommandDefinition> = new Map()
 
 	/**
+	 * Predicate deciding whether a command name is currently visible, injected
+	 * by the kernel to implement plugin activation. `undefined` (the default)
+	 * means no gating — a registry constructed without a kernel behaves exactly
+	 * as it did before plugin activation existed.
+	 *
+	 * The registry stays plugin-unaware on purpose: it knows only "some names
+	 * may be filtered out", never why.
+	 */
+	private isActive: ((commandName: string) => boolean) | undefined
+
+	/** Install the visibility predicate. Called once by the `BHAI` constructor. */
+	setActivePredicate(predicate: (commandName: string) => boolean): void {
+		this.isActive = predicate
+	}
+
+	/**
 	 * Add (or replace) a command — imperative `bh.addCommand(name, def)` path
 	 * (§ 6). Stores `def` under `name`.
 	 *
@@ -89,18 +105,26 @@ export class CommandRegistry {
 	listCommands(): Array<{ name: string; def: BHAICommandDefinition }> {
 		const out: Array<{ name: string; def: BHAICommandDefinition }> = []
 		for (const [name, def] of this.commands) {
+			// A command contributed by a deactivated plugin stays registered but
+			// drops out of every read path, so it cannot be listed or resolved.
+			if (this.isActive !== undefined && !this.isActive(name)) continue
 			out.push({ name, def })
 		}
 		return out
 	}
 
-	/** Look up a registered command by `name`, or `undefined` if not registered. */
+	/**
+	 * Look up a registered command by `name`, or `undefined` if not registered
+	 * — or if its contributing plugin is currently deactivated.
+	 */
 	get(name: string): BHAICommandDefinition | undefined {
+		if (this.isActive !== undefined && !this.isActive(name)) return undefined
 		return this.commands.get(name)
 	}
 
-	/** Number of currently-registered commands. Convenience accessor. */
+	/** Number of currently-visible commands. Convenience accessor. */
 	get size(): number {
-		return this.commands.size
+		if (this.isActive === undefined) return this.commands.size
+		return this.listCommands().length
 	}
 }

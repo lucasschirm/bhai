@@ -215,10 +215,18 @@ export class McpRegistry {
 export interface ResolvedGetMcpsHook {
 	/** Returns a list of MCP server configs to attach via `addMcp()`. */
 	getMcps: () => Promise<McpServerConfig[]>
+	/**
+	 * Name of the plugin that declared this hook, when known. Carried purely so
+	 * the kernel can attribute the resulting attachments back to their plugin
+	 * for activation gating; this module never interprets it.
+	 */
+	owner?: string
 }
 export interface ResolvedModelSourceHook {
 	/** Returns a list of model catalogue entries to merge into `listModels()`. */
 	modelSource: () => Promise<ModelInfo[]>
+	/** Name of the plugin that declared this hook, when known. See {@link ResolvedGetMcpsHook.owner}. */
+	owner?: string
 }
 
 /**
@@ -241,17 +249,26 @@ export interface ResolvedModelSourceHook {
  *                 are applied to every hook-attached server; a hook that
  *                 needs per-server options should call `bh.addMcp()`
  *                 directly from its `initialize` body instead.
+ * @param onAttached Optional callback invoked after each successful attach with
+ *                 the hook that produced it and the resulting handle. The
+ *                 kernel uses it to attribute the attached server (and the
+ *                 tools its discovery registered) to `hook.owner`.
+ *                 Attribution is reported here rather than inferred from an
+ *                 ambient scope because `addMcp()` registers its tools after
+ *                 an `await`, where no synchronous scope survives.
  */
 export async function resolveGetMcpsHooks(
 	hooks: ResolvedGetMcpsHook[],
 	registry: McpRegistry,
 	options?: unknown,
+	onAttached?: (hook: ResolvedGetMcpsHook, handle: McpHandle) => void,
 ): Promise<McpHandle[]> {
 	const handles: McpHandle[] = []
 	for (const hook of hooks) {
 		const configs = await hook.getMcps()
 		for (const config of configs) {
 			const handle = await registry.addMcp(config, options)
+			onAttached?.(hook, handle)
 			handles.push(handle)
 		}
 	}
@@ -276,13 +293,20 @@ export async function resolveGetMcpsHooks(
  * `DriverRegistry.listModels()`'s no-de-duplication convention.
  *
  * @param hooks The `modelSource` hooks to resolve, in registration order.
+ * @param onResolved Optional callback invoked after each hook resolves, with the
+ *              hook and the models it contributed. The kernel uses it to keep a
+ *              per-owner view of the catalogue so a deactivated plugin's models
+ *              can drop out of `bh.listModels()`. The merged return value is
+ *              unchanged either way.
  */
 export async function resolveModelSourceHooks(
 	hooks: ResolvedModelSourceHook[],
+	onResolved?: (hook: ResolvedModelSourceHook, models: ModelInfo[]) => void,
 ): Promise<ModelInfo[]> {
 	const merged: ModelInfo[] = []
 	for (const hook of hooks) {
 		const models = await hook.modelSource()
+		onResolved?.(hook, models)
 		for (const m of models) {
 			merged.push(m)
 		}

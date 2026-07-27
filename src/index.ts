@@ -26,6 +26,9 @@ export { EventBus as ConversationEventBus } from "./conversation/event-bus.js"
 export type { EmitHandler, FoldHandler } from "./conversation/event-bus.js"
 export { Conversation } from "./conversation/system-prompt.js"
 export type {
+	ConversationOptions,
+	ConversationPluginStatus,
+	PluginActivationSource,
 	ResolvedSystemPrompt,
 	StartEventPatch,
 	StartHandler,

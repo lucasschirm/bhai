@@ -77,6 +77,13 @@ Source of truth for task files: `../tasks/` (parent repo).
 | 0037 | Example: Agent-memory plugin      | [ ]    |
 | 0038 | Example: RAG plugin (both shapes) | [ ]    |
 
+Note on TASK_0034/TASK_0035: plugin activation (`enablePlugin`/`disablePlugin`)
+landed the **attribution** substrate both tasks need — the kernel now records
+which plugin contributed every tool, command, driver, MCP server and event
+handler, and `listPlugins()` reports it. TASK_0034 still owns the public
+`getContributions()` shape; TASK_0035 still owns real teardown, which activation
+deliberately does not do (it hides contributions, it does not unregister them).
+
 ## Phase 6 — Interop, validation, docs
 
 | Task | Title                                       | Status |

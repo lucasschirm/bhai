@@ -44,6 +44,43 @@ type ConversationEvents = {
 	start: ResolvedSystemPrompt
 }
 
+/**
+ * The slice of the kernel a {@link Conversation} needs in order to inherit
+ * global plugin activation state.
+ *
+ * Declared structurally rather than importing `BHAI` so `src/conversation/`
+ * stays independent of `src/core/` — the two subtrees are deliberately
+ * decoupled (`src/index.ts` even has to alias one's `EventBus` around the
+ * other's). A `BHAI` instance satisfies this interface without declaring it.
+ */
+export interface PluginActivationSource {
+	/** Whether `name` is currently active kernel-wide. */
+	isPluginEnabled(name: string): boolean
+	/** Every registered plugin, in registration order. */
+	listPlugins(): Array<{ name: string }>
+}
+
+/** Construction options for a {@link Conversation}. */
+export interface ConversationOptions {
+	/**
+	 * Kernel whose global plugin activation this conversation inherits. Omit for
+	 * a standalone conversation, in which case every handler always runs and the
+	 * per-conversation overrides below still work for any owner name you use.
+	 */
+	bhai?: PluginActivationSource
+}
+
+/** One plugin's activation state as seen by a single conversation. */
+export interface ConversationPluginStatus {
+	name: string
+	/** The kernel-wide state this conversation would inherit. */
+	globalEnabled: boolean
+	/** This conversation's override: `undefined` means "inherit". */
+	override: boolean | undefined
+	/** What actually applies here — `override ?? globalEnabled`. */
+	effective: boolean
+}
+
 function appendSection(base: string, addition: string): string {
 	return base.length > 0 ? `${base}\n\n${addition}` : addition
 }
@@ -87,20 +124,118 @@ export class Conversation {
 	private readonly baseSystemPrompt: string
 	private resolved: ResolvedSystemPrompt | undefined
 
-	constructor(baseSystemPrompt = "") {
+	/** Kernel supplying global plugin activation state, if this conversation has one. */
+	private readonly source: PluginActivationSource | undefined
+
+	/**
+	 * Per-conversation activation overrides. A key present means this
+	 * conversation has taken an explicit position on that plugin; a key absent
+	 * means "inherit whatever the kernel says". That three-state distinction is
+	 * why this is a `Map` to `boolean` rather than a `Set` of disabled names —
+	 * a conversation must be able to force a plugin ON that is globally off.
+	 */
+	private readonly overrides: Map<string, boolean> = new Map()
+
+	constructor(baseSystemPrompt = "", options: ConversationOptions = {}) {
 		this.baseSystemPrompt = baseSystemPrompt
+		this.source = options.bhai
 	}
 
 	/**
 	 * Register a `start` handler. Handlers run in registration order when the
 	 * conversation is first started. Returns a disposer that unregisters the
 	 * handler (only meaningful before {@link ensureStarted} has run).
+	 *
+	 * `owner` attributes the handler to a plugin, so it is skipped while that
+	 * plugin is inactive for this conversation ({@link isPluginEnabled}). A
+	 * handler registered without an `owner` — which every pre-existing caller
+	 * does — is host-owned and always runs.
+	 *
+	 * A skipped handler leaves the running value untouched, exactly as a handler
+	 * returning `undefined` does, so deactivating a plugin is indistinguishable
+	 * from it never having registered anything.
 	 */
-	onStart(handler: StartHandler): () => void {
+	onStart(handler: StartHandler, owner?: string): () => void {
 		return this.bus.on("start", (current) => {
+			if (owner !== undefined && !this.isPluginEnabled(owner)) {
+				return current
+			}
 			const patch = handler(current)
 			return patch === undefined ? current : applyStartPatch(current, patch)
 		})
+	}
+
+	// ---------------------------------------------------------------------------
+	// Per-conversation plugin activation.
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Force `name` ON for this conversation, whatever the kernel says. Overrides
+	 * a global deactivation.
+	 */
+	enablePlugin(name: string): this {
+		this.overrides.set(name, true)
+		return this
+	}
+
+	/**
+	 * Force `name` OFF for this conversation, leaving every other conversation
+	 * and the kernel itself untouched.
+	 */
+	disablePlugin(name: string): this {
+		this.overrides.set(name, false)
+		return this
+	}
+
+	/**
+	 * Drop this conversation's override for `name`, returning it to inheriting
+	 * the kernel's state. A no-op if no override was set.
+	 */
+	resetPlugin(name: string): this {
+		this.overrides.delete(name)
+		return this
+	}
+
+	/**
+	 * Whether `name` is active for this conversation: its override if one is set,
+	 * otherwise the kernel's global state. With no kernel and no override, the
+	 * answer is `true` — a standalone conversation gates nothing.
+	 */
+	isPluginEnabled(name: string): boolean {
+		const override = this.overrides.get(name)
+		if (override !== undefined) return override
+		return this.source?.isPluginEnabled(name) ?? true
+	}
+
+	/**
+	 * Every plugin the kernel knows about, with the global state, this
+	 * conversation's override, and the effective result. Empty when this
+	 * conversation has no kernel — overrides can still be set against arbitrary
+	 * owner names, there is just no plugin list to enumerate.
+	 */
+	listPlugins(): ConversationPluginStatus[] {
+		const plugins = this.source?.listPlugins() ?? []
+		return plugins.map(({ name }) => ({
+			name,
+			globalEnabled: this.source?.isPluginEnabled(name) ?? true,
+			override: this.overrides.get(name),
+			effective: this.isPluginEnabled(name),
+		}))
+	}
+
+	/**
+	 * Discard the cached resolution so the next read re-runs every `start`
+	 * handler against the current activation state.
+	 *
+	 * Needed because resolution is cached for the conversation's lifetime (see
+	 * {@link ensureStarted}), which means a toggle made after the conversation
+	 * has already started has no effect on its own. That is the intended default:
+	 * a running conversation's system prompt should not mutate underneath it just
+	 * because a plugin was switched off elsewhere. `restart()` is how a caller
+	 * explicitly opts into re-resolving, accepting that every handler runs again.
+	 */
+	restart(): void {
+		this.resolved = undefined
 	}
 
 	/**

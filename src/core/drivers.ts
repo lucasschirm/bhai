@@ -41,6 +41,35 @@ export class DriverRegistry {
 	constructor(private readonly bus: EventBus) {}
 
 	/**
+	 * Predicate deciding whether a driver id is currently visible, injected by
+	 * the kernel to implement plugin activation. `undefined` (the default) means
+	 * no gating — a registry constructed without a kernel behaves exactly as it
+	 * did before plugin activation existed.
+	 *
+	 * The registry stays plugin-unaware on purpose: it knows only "some ids may
+	 * be filtered out", never why. The kernel owns the ownership ledger that
+	 * answers the question.
+	 */
+	private isActive: ((driverId: string) => boolean) | undefined
+
+	/** Install the visibility predicate. Called once by the `BHAI` constructor. */
+	setActivePredicate(predicate: (driverId: string) => boolean): void {
+		this.isActive = predicate
+	}
+
+	/**
+	 * Drivers currently visible: every registered driver when no predicate is
+	 * installed, otherwise only those whose id the predicate accepts. Preserves
+	 * registration order.
+	 */
+	private activeEntries(): BHAIDriver[] {
+		const all = Array.from(this.drivers.values())
+		const predicate = this.isActive
+		if (predicate === undefined) return all
+		return all.filter((d) => predicate(d.id))
+	}
+
+	/**
 	 * Register (or replace) a driver (§ 6, § 10.1). Inserts the entry under
 	 * `driver.id` and fires `driver.registered` with `{ driver }`.
 	 *
@@ -111,7 +140,10 @@ export class DriverRegistry {
 		// implements the driver half of that merge. TASK_0015 extends this method
 		// (or wraps it) to also include results from every registered `modelSource`
 		// capability-object hook, resolved during bh.init() per § 8.5.
-		const drivers = Array.from(this.drivers.values())
+		// Only active drivers contribute. A driver belonging to a deactivated
+		// plugin keeps its registration (and its `driver.registered` event
+		// already fired) but drops out of the merged catalogue.
+		const drivers = this.activeEntries()
 		const perDriver = await Promise.all(drivers.map((d) => d.listModels()))
 		// Concatenate in registration order. `perDriver[i]` corresponds to
 		// `drivers[i]` since `Promise.all` preserves input order.
@@ -134,11 +166,13 @@ export class DriverRegistry {
 	 * `bh` does not re-export it on § 6's named method list.
 	 */
 	get(id: string): BHAIDriver | undefined {
+		if (this.isActive !== undefined && !this.isActive(id)) return undefined
 		return this.drivers.get(id)
 	}
 
-	/** Number of currently-registered drivers. Convenience accessor. */
+	/** Number of currently-visible drivers. Convenience accessor. */
 	get size(): number {
-		return this.drivers.size
+		if (this.isActive === undefined) return this.drivers.size
+		return this.activeEntries().length
 	}
 }
