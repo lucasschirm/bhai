@@ -67,12 +67,19 @@ export class BhaiComposer extends LitElement {
 		const label = generating ? "Stop" : "Send"
 		return html`
 			<textarea
+				id="composer-input"
 				placeholder=${this.placeholder || nothing}
 				rows="2"
 				?disabled=${generating}
 				@keydown=${this._onKeyDown}
 			></textarea>
-			<button type="button" data-state=${generating ? "stop" : "send"} @click=${this._onClick}>
+			<button
+				type="button"
+				id="composer-send"
+				data-state=${generating ? "stop" : "send"}
+				?disabled=${generating}
+				@click=${this._onClick}
+			>
 				${label}
 			</button>
 		`
