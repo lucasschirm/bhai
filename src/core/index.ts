@@ -12,6 +12,10 @@ export {
 	type BHAIPluginFactory,
 	type BHAIPluginLike,
 	type ConfigChangedPayload,
+	type ModelAddedPayload,
+	type ModelChangedPayload,
+	type ModelRemovedPayload,
+	type ModelsChangedPayload,
 	type PluginContributions,
 	type PluginStatus,
 } from "./bhai.js"
@@ -128,5 +132,5 @@ export {
 	type ResolveConversationModelOptions,
 	type ConversationModelState,
 	type SetModelResult,
-	type ModelChangedPayload,
+	type ModelSelectedPayload,
 } from "./models.js"

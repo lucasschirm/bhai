@@ -22,7 +22,9 @@ ARCHITECTURE.md § 6.
    with `ajv`-based JSON Schema validation and defaulting during `init()`,
    plus `config.changed` event emission for post-init updates.
 5. **Tool registry** wiring (TASK_0008): `addTool`/`removeTool`/`listTools`.
-6. **Driver registry** wiring (TASK_0009): `addDriver`/`listModels`.
+6. **Driver registry** wiring (TASK_0009): `addDriver`/`listModels`, with
+   model lifecycle events (`model.added`, `model.changed`, `model.removed`,
+   `models.changed`) dispatched on every catalogue refresh.
 7. **Command registry** wiring (TASK_0010): `addCommand`/`listCommands`.
 8. **Message-field registry**: `defineMessageField` — the open message
    contract (plugin-declared accessors over `message.meta`).
@@ -87,7 +89,8 @@ Backed by an internal `EventBus` instance (see `event-bus.md`). The public
 `emit()` enforces the reserved-namespace list (§ 8.4); the kernel uses an
 internal `dispatch()` bypass to fire reserved events like `initialize`,
 `dispose`, `error`, `config.changed`, `tool.registered`, `tool.removed`,
-`driver.registered`.
+`driver.registered`, `mcp.attached`, and the model lifecycle events
+(`model.added`, `model.changed`, `model.removed`, `models.changed`).
 
 ### Side channels: `complete()` / `embed()`
 

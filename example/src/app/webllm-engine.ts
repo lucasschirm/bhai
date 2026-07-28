@@ -1,14 +1,13 @@
-/** @file WebGPU capability check, model list resolution, and engine setup. */
+/** @file WebGPU capability check and engine setup. */
 
 import * as webllm from "@mlc-ai/web-llm"
 
-/** The models to show, and which one starts selected. */
-export interface ModelChoice {
-	/** Model ids to put in the picker. */
-	modelIds: string[]
-	/** The id to pre-select. */
-	defaultModelId: string
-}
+/**
+ * The prebuilt app config shipped by the installed `@mlc-ai/web-llm` package.
+ * Passed into the WebLLM driver so `listModels()` and `capabilities()` work
+ * before the engine is fully warmed.
+ */
+export const prebuiltAppConfig = webllm.prebuiltAppConfig
 
 /**
  * Whether this browser can run WebLLM at all.
@@ -17,19 +16,6 @@ export interface ModelChoice {
  */
 export function hasWebGpu(): boolean {
 	return Boolean(navigator.gpu)
-}
-
-/**
- * Resolve every model shipped by the installed `@mlc-ai/web-llm` package.
- *
- * The default selection prefers a Qwen3 model when available because it emits
- * reasoning blocks, which the demo's Thought panel is built to surface.
- */
-export function resolveModels(): ModelChoice {
-	const modelIds = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
-	const defaultModelId = modelIds.find((id) => id.startsWith("Qwen3")) ?? modelIds[0] ?? ""
-
-	return { modelIds, defaultModelId }
 }
 
 /**

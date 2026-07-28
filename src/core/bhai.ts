@@ -119,6 +119,60 @@ export interface ConfigChangedPayload {
 }
 
 /**
+ * Payload of the `model.added` framework event.
+ *
+ * Dispatched once for every model that appears in the merged catalogue.
+ */
+export interface ModelAddedPayload {
+	/** The driver id that owns this model. */
+	driver: string
+	/** The model catalogue entry that was added. */
+	model: ModelInfo
+}
+
+/**
+ * Payload of the `model.changed` framework event.
+ *
+ * Dispatched when a model already in the catalogue changes capabilities,
+ * availability, label, or meta.
+ */
+export interface ModelChangedPayload {
+	/** The driver id that owns this model. */
+	driver: string
+	/** The new model catalogue entry. */
+	model: ModelInfo
+	/** The previous model catalogue entry. */
+	previous: ModelInfo
+}
+
+/**
+ * Payload of the `model.removed` framework event.
+ *
+ * Dispatched once for every model that disappears from the merged catalogue.
+ */
+export interface ModelRemovedPayload {
+	/** The driver id that owned this model. */
+	driver: string
+	/** The model catalogue entry that was removed. */
+	model: ModelInfo
+}
+
+/**
+ * Payload of the `models.changed` framework event.
+ *
+ * Dispatched once after all `model.added`/`model.changed`/`model.removed`
+ * events for a single catalogue refresh have been dispatched.
+ */
+export interface ModelsChangedPayload {
+	/** Models that were added. */
+	added: ModelInfo[]
+	/** Models that were removed. */
+	removed: ModelInfo[]
+	/** Models that changed, with previous and current values. */
+	changed: { model: ModelInfo; previous: ModelInfo }[]
+}
+
+/**
  * A bare factory function — plugin form 1 (§ 7.2, pi style).
  *
  * The function IS the plugin's `setup`: it runs immediately at `use()` time,
@@ -472,6 +526,18 @@ export class BHAI {
 	}> = []
 
 	/**
+	 * Cached view of the last merged model catalogue used for diffing.
+	 * Updated by {@link syncModelEvents} before any events are dispatched.
+	 */
+	private modelSnapshot: ModelInfo[] = []
+
+	/**
+	 * Guard against re-entrant catalogue syncs (e.g. a model event handler
+	 * that calls `listModels()`).
+	 */
+	private syncingModels = false
+
+	/**
 	 * The plugin currently being set up or initialized. Every registration made
 	 * while this is set is attributed to that plugin.
 	 *
@@ -619,6 +685,9 @@ export class BHAI {
 	enablePlugin(name: string): this {
 		this.assertRegistered("enablePlugin", name)
 		this.disabledPlugins.delete(name)
+		// A plugin's drivers and modelSource contributions are now visible again;
+		// refresh the catalogue so any resulting changes emit model lifecycle events.
+		this.refreshModels()
 		return this
 	}
 
@@ -654,6 +723,9 @@ export class BHAI {
 	disablePlugin(name: string): this {
 		this.assertRegistered("disablePlugin", name)
 		this.disabledPlugins.add(name)
+		// A plugin's drivers and modelSource contributions are now hidden;
+		// refresh the catalogue so any resulting removals emit model lifecycle events.
+		this.refreshModels()
 		return this
 	}
 
@@ -885,6 +957,10 @@ export class BHAI {
 		await resolveModelSourceHooks(modelSourceHooks, (hook, models) => {
 			this.modelSourceContributions.push({ owner: hook.owner, models })
 		})
+		// Refresh the merged catalogue so model lifecycle events fire for
+		// driver-reported models and `modelSource` contributions before the
+		// `initialize` framework event is dispatched.
+		await this.listModels()
 		await resolveGetMcpsHooks(getMcpsHooks, this.mcpRegistry, undefined, (hook, handle) => {
 			this.attributeMcp(hook.owner, handle)
 		})
@@ -1047,11 +1123,22 @@ export class BHAI {
 	 * Register a model-provider driver (§ 6, § 10.1). Inserts (or replaces)
 	 * the entry under `driver.id` and fires `driver.registered` with
 	 * `{ driver }`. Implemented by TASK_0009.
+	 *
+	 * After registration, the driver's `listModels()` is fetched in the
+	 * background and the merged catalogue is diffed, dispatching
+	 * `model.added`/`model.changed`/`model.removed` and `models.changed` for
+	 * any differences.
 	 */
 	addDriver(driver: BHAIDriver): void {
 		this.assertNotDisposed()
 		this.driverRegistry.addDriver(driver)
 		this.attribute(this.driverOwners, driver.id)
+		// Refresh the catalogue asynchronously. A synchronous `addDriver` is
+		// required by the plugin setup contract, so the fetch and events are
+		// fire-and-forget; any error is routed to the `error` framework event.
+		void this.listModels().catch((err) => {
+			void this.bus.dispatch("error", { error: err, source: "addDriver" })
+		})
 	}
 
 	/**
@@ -1069,8 +1156,24 @@ export class BHAI {
 	 * If `bh.init()` has not yet run, `modelSource` hooks have not been
 	 * resolved, so only the driver half is returned (no error — a host may
 	 * legitimately call `listModels()` pre-init to inspect driver models).
+	 *
+	 * Every successful call diff's the new catalogue against the cached
+	 * `modelSnapshot` and dispatches `model.added`, `model.changed`,
+	 * `model.removed`, and `models.changed` for any differences.
 	 */
 	async listModels(): Promise<ModelInfo[]> {
+		if (this.syncingModels) {
+			return this.modelSnapshot
+		}
+		const next = await this.computeListModels()
+		await this.syncModelEvents(next)
+		return next
+	}
+
+	/**
+	 * Compute the merged catalogue without side effects (no event dispatch).
+	 */
+	private async computeListModels(): Promise<ModelInfo[]> {
 		// The driver half is already gated inside the registry by the predicate
 		// installed in the constructor; the hook half is gated here, where the
 		// per-plugin breakdown lives.
@@ -1081,6 +1184,103 @@ export class BHAI {
 			hookModels.push(...contribution.models)
 		}
 		return [...driverModels, ...hookModels]
+	}
+
+	/**
+	 * Refresh the merged catalogue in the background and route any error to
+	 * the `error` framework event. Used by `addDriver` and plugin activation
+	 * toggles, which cannot await without breaking their synchronous API.
+	 */
+	private refreshModels(): void {
+		void this.listModels().catch((err) => {
+			void this.bus.dispatch("error", { error: err, source: "model.refresh" })
+		})
+	}
+
+	/**
+	 * Diff `next` against `modelSnapshot` and dispatch lifecycle events.
+	 *
+	 * Models are keyed by their qualified `ref`. The snapshot is updated
+	 * before events are dispatched so re-entrant `listModels()` calls see
+	 * the new catalogue while `syncingModels` is true.
+	 */
+	private async syncModelEvents(next: ModelInfo[]): Promise<void> {
+		if (this.syncingModels) return
+		this.syncingModels = true
+		try {
+			const previous = this.modelSnapshot
+			const prevByRef = this.indexByRef(previous)
+			const nextByRef = this.indexByRef(next)
+
+			const added: ModelInfo[] = []
+			const removed: ModelInfo[] = []
+			const changed: { model: ModelInfo; previous: ModelInfo }[] = []
+
+			for (const [ref, model] of nextByRef) {
+				const old = prevByRef.get(ref)
+				if (!old) {
+					added.push(model)
+				} else if (!this.modelInfoEqual(model, old)) {
+					changed.push({ model, previous: old })
+				}
+			}
+
+			for (const [ref, model] of prevByRef) {
+				if (!nextByRef.has(ref)) {
+					removed.push(model)
+				}
+			}
+
+			if (added.length === 0 && removed.length === 0 && changed.length === 0) {
+				return
+			}
+
+			this.modelSnapshot = next
+
+			for (const model of added) {
+				await this.bus.dispatch("model.added", { driver: model.driver, model })
+			}
+			for (const change of changed) {
+				await this.bus.dispatch("model.changed", {
+					driver: change.model.driver,
+					model: change.model,
+					previous: change.previous,
+				})
+			}
+			for (const model of removed) {
+				await this.bus.dispatch("model.removed", { driver: model.driver, model })
+			}
+			await this.bus.dispatch("models.changed", { added, removed, changed })
+		} finally {
+			this.syncingModels = false
+		}
+	}
+
+	/**
+	 * Build a `ref → ModelInfo` map from a catalogue, keeping the first
+	 * occurrence of any duplicate `ref` for event-diff purposes.
+	 */
+	private indexByRef(models: ModelInfo[]): Map<string, ModelInfo> {
+		const map = new Map<string, ModelInfo>()
+		for (const model of models) {
+			if (!map.has(model.ref)) {
+				map.set(model.ref, model)
+			}
+		}
+		return map
+	}
+
+	/**
+	 * Compare two `ModelInfo` values for catalogue-diff purposes.
+	 */
+	private modelInfoEqual(a: ModelInfo, b: ModelInfo): boolean {
+		if (a.id !== b.id) return false
+		if (a.driver !== b.driver) return false
+		if (a.label !== b.label) return false
+		if (a.availability !== b.availability) return false
+		if (JSON.stringify(a.capabilities) !== JSON.stringify(b.capabilities)) return false
+		if (JSON.stringify(a.meta) !== JSON.stringify(b.meta)) return false
+		return true
 	}
 
 	/**

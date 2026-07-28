@@ -9,10 +9,10 @@ import type { BHAI, BHAIConversation } from "@lucasschirm/bhai"
 import type { WebLLM } from "@lucasschirm/bhai/plugins/webllm"
 import type * as webllm from "@mlc-ai/web-llm"
 
-import type { LitTypeahead } from "@lucasschirm/litjs-typeahead"
 import type { BhaiColdStart } from "../components/cold-start-panel.js"
 import type { BhaiComposer } from "../components/composer.js"
 import type { BhaiConversation } from "../components/conversation-view.js"
+import type { BhaiModelSelect } from "../components/model-select.js"
 import type { BhaiStatusIndicator } from "../components/status-indicator.js"
 import type { BhaiTelemetry } from "../components/telemetry-panel.js"
 import { formatSeconds, formatTokens, formatTps } from "../lib/format.js"
@@ -60,14 +60,14 @@ export interface ChatControllerDeps {
 		conversation: BhaiConversation
 		telemetry: BhaiTelemetry
 		coldStart: BhaiColdStart
-		modelSelect: LitTypeahead
+		modelSelect: BhaiModelSelect
 	}
 }
 
 /** Controller returned by {@link createChatController}. */
 export interface ChatController {
-	/** Create a fresh conversation for the given bare MLC model id. */
-	selectModel(modelId: string): Promise<void>
+	/** Create a fresh conversation for the given qualified model ref. */
+	selectModel(modelRef: string): Promise<void>
 	/** Send a user message and stream the reply. */
 	send(text: string): Promise<void>
 	/** Abort the in-flight turn, if any. */
@@ -147,10 +147,7 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 		const decodeRatio = thermalRatio(decodeTps ?? 0)
 
 		const { inputTokens = 0, outputTokens = 0 } = conversation.usage
-		const selectedModelId = ui.modelSelect.value
-		const contextWindow = selectedModelId
-			? driver.capabilities(selectedModelId).contextWindow
-			: undefined
+		const contextWindow = ui.modelSelect.selectedModel?.capabilities?.contextWindow
 		const ttftMs = firstTokenTime === null ? null : firstTokenTime - sendStartTime
 
 		ui.telemetry.updateStats({
@@ -167,8 +164,8 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 	}
 
 	return {
-		async selectModel(modelId) {
-			if (!modelId) return
+		async selectModel(modelRef) {
+			if (!modelRef) return
 
 			try {
 				ui.composer.setState("idle")
@@ -185,7 +182,7 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 				// native reasoning channel, so without this the example would have to
 				// parse the tags itself.
 				conversation = await bh.createConversation({
-					model: `webllm/${modelId}`,
+					model: modelRef,
 					parseThink: true,
 				})
 				wireConversationEvents()

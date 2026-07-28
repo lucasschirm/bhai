@@ -112,13 +112,20 @@ describe("EventBus — reserved name rejection (§ 8.4)", () => {
 		expect(() => bus.emit(event, {})).toThrow(/reserved for kernel use/)
 	})
 
-	it.each(["conversation.created", "driver.registered", "mcp.attached", "config.changed"])(
-		"throws synchronously for reserved namespace prefix %s",
-		(event) => {
-			const bus = new EventBus()
-			expect(() => bus.emit(event, {})).toThrow(/reserved for kernel use/)
-		},
-	)
+	it.each([
+		"conversation.created",
+		"driver.registered",
+		"mcp.attached",
+		"config.changed",
+		"model.added",
+		"model.changed",
+		"model.removed",
+		"models.changed",
+		"model.resolve",
+	])("throws synchronously for reserved namespace prefix %s", (event) => {
+		const bus = new EventBus()
+		expect(() => bus.emit(event, {})).toThrow(/reserved for kernel use/)
+	})
 
 	it("throws synchronously for an un-namespaced custom name (no dot)", () => {
 		const bus = new EventBus()

@@ -52,7 +52,8 @@ class EventBus {
 - `dispatch(event, payload, options?)` — **internal entrypoint** for
   kernel-originated events. Bypasses the reserved-name check. This is
   how the kernel fires `initialize`, `dispose`, `error`, `config.changed`,
-  `tool.registered`, `tool.removed`, `driver.registered`.
+  `tool.registered`, `tool.removed`, `driver.registered`, `mcp.attached`,
+  `model.added`, `model.changed`, `model.removed`, `models.changed`.
 
 ### `Handler<Payload>`
 
@@ -88,7 +89,8 @@ interface EmitResult<Payload> {
 
 The public `emit()` rejects events whose names fall in the kernel-reserved
 set (e.g. `initialize`, `dispose`, `error`, `config.*`,
-`tool.registered`, `tool.removed`, `driver.registered`, `conversation.*`).
+`tool.registered`, `tool.removed`, `driver.registered`, `mcp.attached`,
+`model.*`, `models.*`, `conversation.*`).
 Only the kernel may dispatch these, via the internal `dispatch()` bypass.
 
 **One documented exception**: emitting `compact` from a plugin is

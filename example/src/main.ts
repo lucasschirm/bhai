@@ -10,16 +10,15 @@
  * `../../src/*.ts` — so the example exercises the real package boundary.
  */
 
+import type { ModelInfo } from "@lucasschirm/bhai"
 import { BHAI } from "@lucasschirm/bhai"
 import { createMcpPlugin } from "@lucasschirm/bhai/plugins/mcp"
 import { type MLCEngineInstance, WebLLM } from "@lucasschirm/bhai/plugins/webllm"
-import "@lucasschirm/litjs-typeahead"
-import type { LitTypeahead } from "@lucasschirm/litjs-typeahead"
 
 import { createChatController } from "./app/chat-controller.js"
 import { showFatalError } from "./app/fatal-error.js"
 import { createMcpController } from "./app/mcp-controller.js"
-import { createEngine, hasWebGpu, resolveModels } from "./app/webllm-engine.js"
+import { createEngine, hasWebGpu, prebuiltAppConfig } from "./app/webllm-engine.js"
 // Importing the component modules registers their custom elements.
 import "./components/cold-start-panel.js"
 import "./components/composer.js"
@@ -27,6 +26,7 @@ import "./components/conversation-view.js"
 import "./components/mcp-add-form.js"
 import "./components/mcp-error-dialog.js"
 import "./components/mcp-server-list.js"
+import "./components/model-select.js"
 import "./components/status-indicator.js"
 import "./components/telemetry-panel.js"
 import { byId } from "./lib/dom.js"
@@ -35,7 +35,7 @@ import { byId } from "./lib/dom.js"
 function buildUi() {
 	return {
 		status: byId<BhaiStatusIndicator>("status"),
-		modelSelect: byId<LitTypeahead>("model-select"),
+		modelSelect: byId<BhaiModelSelect>("model-select"),
 		composer: byId<BhaiComposer>("composer"),
 		conversation: byId<BhaiConversation>("conversation"),
 		telemetry: byId<BhaiTelemetry>("telemetry-stats"),
@@ -53,8 +53,18 @@ import type { BhaiConversation } from "./components/conversation-view.js"
 import type { BhaiMcpAddForm } from "./components/mcp-add-form.js"
 import type { BhaiMcpErrorDialog } from "./components/mcp-error-dialog.js"
 import type { BhaiMcpServerList } from "./components/mcp-server-list.js"
+import type { BhaiModelSelect } from "./components/model-select.js"
 import type { BhaiStatusIndicator } from "./components/status-indicator.js"
 import type { BhaiTelemetry } from "./components/telemetry-panel.js"
+
+/** Pick a sensible default from a list of bare model ids. */
+function pickDefaultModel(models: ModelInfo[]): ModelInfo | undefined {
+	return (
+		models.find((m) => m.id.startsWith("Qwen3")) ??
+		models.find((m) => m.id.startsWith("Qwen")) ??
+		models[0]
+	)
+}
 
 /** Set up the engine, the kernel, and both orchestrators. */
 async function initialize(): Promise<void> {
@@ -70,14 +80,6 @@ async function initialize(): Promise<void> {
 	}
 
 	try {
-		const { modelIds, defaultModelId } = resolveModels()
-		if (modelIds.length === 0) {
-			showFatalError("No models available in @mlc-ai/web-llm — check your installation.", ui)
-			return
-		}
-		ui.modelSelect.items = modelIds
-		ui.modelSelect.value = defaultModelId
-
 		const engine = createEngine((progress, text) => ui.coldStart.show(progress, text))
 
 		const bh = new BHAI()
@@ -90,7 +92,10 @@ async function initialize(): Promise<void> {
 		// the NON-streaming one — so TypeScript compares against that and reports
 		// `stream: true` as incompatible. The call the driver actually makes is
 		// exactly the streaming overload.
-		const driver = new WebLLM({ engine: engine as unknown as MLCEngineInstance })
+		const driver = new WebLLM({
+			engine: engine as unknown as MLCEngineInstance,
+			appConfig: prebuiltAppConfig,
+		})
 		bh.addDriver(driver)
 
 		// The MCP plugin fills the kernel's client-factory seam — without it
@@ -102,14 +107,29 @@ async function initialize(): Promise<void> {
 
 		await bh.init()
 
+		// Seed the picker from the live kernel catalogue and keep it in sync.
+		const refreshPicker = async () => {
+			ui.modelSelect.models = await bh.listModels()
+		}
+		await refreshPicker()
+		bh.on("models.changed", refreshPicker)
+
+		const models = ui.modelSelect.models
+		const defaultModel = pickDefaultModel(models)
+		if (!defaultModel) {
+			showFatalError("No models available in @mlc-ai/web-llm — check your installation.", ui)
+			return
+		}
+		ui.modelSelect.selectedModelId = defaultModel.id
+
 		const chat = createChatController({ bh, engine, driver, ui })
 		ui.composer.wire({
 			onSend: (text) => void chat.send(text),
 			onStop: () => chat.stop(),
 		})
-		ui.modelSelect.addEventListener("change", (event) => {
-			const value = (event as CustomEvent<{ value: string }>).detail?.value
-			if (value) void chat.selectModel(value)
+		ui.modelSelect.addEventListener("bhai-change", (event) => {
+			const ref = (event as CustomEvent<{ ref: string }>).detail?.ref
+			if (ref) void chat.selectModel(ref)
 		})
 
 		const mcpController = createMcpController({
@@ -123,10 +143,10 @@ async function initialize(): Promise<void> {
 		// chat UI, and every outcome lands in the panel either way.
 		void mcpController.start()
 
-		// The typeahead shows `defaultModelId` on load, but a programmatic default
-		// never fires a `change` event — so bootstrap that conversation here, and
-		// the very first message works without touching the picker.
-		await chat.selectModel(defaultModelId)
+		// The picker shows `defaultModel.id` on load, but a programmatic default
+		// never fires a `bhai-change` event — so bootstrap that conversation here,
+		// and the very first message works without touching the picker.
+		await chat.selectModel(defaultModel.ref)
 	} catch (error) {
 		console.error("Initialization failed:", error)
 		showFatalError("Failed to initialize — check the console for details.", ui)

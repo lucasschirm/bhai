@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
+import type { BHAIDriver, ModelInfo } from "../types/index.js"
 import { BHAI, type BHAIPluginCapabilities } from "./bhai.js"
 
 // TASK_0003 — BHAI kernel class + use() normalization (plugin forms 1 & 2).
@@ -192,5 +193,127 @@ describe("BHAI.use — chaining order", () => {
 		bh.use(() => {})
 		expect(bh.__testPluginCount()).toBe(3)
 		expect(bh.__testHasPlugin("cap")).toBe(true)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Model lifecycle events
+// ---------------------------------------------------------------------------
+
+/** Default capabilities used by test fixtures. */
+const TEST_CAPS: ModelInfo["capabilities"] = {
+	streaming: true,
+	toolCalls: false,
+	reasoning: false,
+}
+
+/** Build a ModelInfo fixture from a qualified ref. */
+function testModel(ref: string, overrides: Partial<ModelInfo> = {}): ModelInfo {
+	const [driver, id] = ref.split("/")
+	return {
+		ref,
+		driver,
+		id,
+		capabilities: { ...TEST_CAPS },
+		availability: "ready",
+		...overrides,
+	}
+}
+
+/** Build a mock BHAIDriver with a fixed list of models. */
+function testDriver(id: string, models: ModelInfo[]): BHAIDriver {
+	return {
+		id,
+		listModels: async () => models,
+		capabilities: () => TEST_CAPS,
+		async *chat() {},
+	}
+}
+
+/** Drain the bus FIFO chain. */
+async function flush(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+describe("BHAI model lifecycle events", () => {
+	it("emits model.added and models.changed when a driver is added", async () => {
+		const bh = new BHAI()
+		const added = vi.fn()
+		const batch = vi.fn()
+		bh.on("model.added", added)
+		bh.on("models.changed", batch)
+
+		const m1 = testModel("webllm/m1")
+		bh.addDriver(testDriver("webllm", [m1]))
+		await flush()
+
+		expect(added).toHaveBeenCalledTimes(1)
+		expect(added).toHaveBeenCalledWith({ driver: "webllm", model: m1 })
+		expect(batch).toHaveBeenCalledTimes(1)
+		expect(batch.mock.calls[0][0].added).toEqual([m1])
+		expect(batch.mock.calls[0][0].removed).toEqual([])
+		expect(batch.mock.calls[0][0].changed).toEqual([])
+	})
+
+	it("emits model.removed when a driver is shadowed", async () => {
+		const bh = new BHAI()
+		const removed = vi.fn()
+		const added = vi.fn()
+		const batch = vi.fn()
+		bh.on("model.removed", removed)
+		bh.on("model.added", added)
+		bh.on("models.changed", batch)
+
+		const m1 = testModel("webllm/m1")
+		const m2 = testModel("webllm/m2")
+		bh.addDriver(testDriver("webllm", [m1]))
+		await flush()
+
+		bh.addDriver(testDriver("webllm", [m2]))
+		await flush()
+
+		expect(removed).toHaveBeenCalledTimes(1)
+		expect(removed).toHaveBeenCalledWith({ driver: "webllm", model: m1 })
+		expect(added).toHaveBeenCalledTimes(2)
+		expect(batch).toHaveBeenCalledTimes(2)
+		expect(batch.mock.calls[1][0].removed).toEqual([m1])
+		expect(batch.mock.calls[1][0].added).toEqual([m2])
+	})
+
+	it("emits model.changed when capabilities or availability change", async () => {
+		const bh = new BHAI()
+		const changed = vi.fn()
+		const batch = vi.fn()
+		bh.on("model.changed", changed)
+		bh.on("models.changed", batch)
+
+		const m1 = testModel("webllm/m1")
+		bh.addDriver(testDriver("webllm", [m1]))
+		await flush()
+
+		const m1Updated = testModel("webllm/m1", { availability: "downloadable" })
+		bh.addDriver(testDriver("webllm", [m1Updated]))
+		await flush()
+
+		expect(changed).toHaveBeenCalledTimes(1)
+		expect(changed.mock.calls[0][0].driver).toBe("webllm")
+		expect(changed.mock.calls[0][0].model).toEqual(m1Updated)
+		expect(changed.mock.calls[0][0].previous).toEqual(m1)
+		expect(batch.mock.calls[1][0].changed).toHaveLength(1)
+	})
+
+	it("emits model.added for modelSource hook contributions", async () => {
+		const bh = new BHAI()
+		const added = vi.fn()
+		bh.on("model.added", added)
+
+		const m1 = testModel("custom/m1")
+		bh.use({
+			name: "source",
+			modelSource: async () => [m1],
+		})
+		await bh.init()
+
+		expect(added).toHaveBeenCalledWith({ driver: "custom", model: m1 })
 	})
 })

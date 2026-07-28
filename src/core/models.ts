@@ -281,10 +281,10 @@ export async function resolveConversationModel(
 // ---------------------------------------------------------------------------
 
 /**
- * The `model.changed` event payload (§ 8.1). Notification-only — patches
+ * The `model.selected` event payload (§ 8.1). Notification-only — patches
  * ignored.
  */
-export interface ModelChangedPayload {
+export interface ModelSelectedPayload {
 	model: string
 	previousModel: string
 	source: "set" | "load" | "resolve"
@@ -337,7 +337,7 @@ export interface SetModelResult {
  * 4. **Capability re-application**: the new model's `capabilities()` govern
  *    the next `chat()` call; this function only ensures `activeModelRef` is
  *    updated before the next `context`/`request` cycle reads it.
- * 5. **`model.changed` event**: fires with `{ model, previousModel, source }`
+ * 5. **`model.selected` event**: fires with `{ model, previousModel, source }`
  *    once the switch takes effect (immediately for non-streaming; at the
  *    deferred application point for queued).
  *
@@ -346,7 +346,7 @@ export interface SetModelResult {
  * @param source The switch source: `'set'` (direct call), `'load'`
  *   (re-resolution during `loadConversation`), or `'resolve'` (tier-3
  *   `model.resolve` fallback).
- * @param emitModelChanged Callback to fire the `model.changed` event.
+ * @param emitModelSelected Callback to fire the `model.selected` event.
  * @returns A {@link SetModelResult} indicating whether the switch was
  *   applied immediately or queued.
  */
@@ -354,7 +354,7 @@ export function setModel(
 	state: ConversationModelState,
 	ref: string,
 	source: "set" | "load" | "resolve",
-	emitModelChanged: (payload: ModelChangedPayload) => void,
+	emitModelSelected: (payload: ModelSelectedPayload) => void,
 ): SetModelResult {
 	// Step 1: validate and qualify the ref.
 	const qualifiedRef = resolveModelRef(ref, state.catalogue)
@@ -370,7 +370,7 @@ export function setModel(
 		const previousModel = state.activeModelRef
 		const applyQueued = () => {
 			state.activeModelRef = qualifiedRef
-			emitModelChanged({
+			emitModelSelected({
 				model: qualifiedRef,
 				previousModel,
 				source,
@@ -382,7 +382,7 @@ export function setModel(
 	// Apply immediately.
 	const previousModel = state.activeModelRef
 	state.activeModelRef = qualifiedRef
-	emitModelChanged({
+	emitModelSelected({
 		model: qualifiedRef,
 		previousModel,
 		source,

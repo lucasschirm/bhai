@@ -97,7 +97,14 @@ const RESERVED_EXACT: ReadonlySet<string> = new Set([
 	"error",
 ])
 
-const RESERVED_PREFIXES: readonly string[] = ["conversation.", "driver.", "mcp.", "config."]
+const RESERVED_PREFIXES: readonly string[] = [
+	"conversation.",
+	"driver.",
+	"mcp.",
+	"config.",
+	"model.",
+	"models.",
+]
 
 /**
  * `EventBus` implements BHAI's uniform event semantics (§ 8) for a single

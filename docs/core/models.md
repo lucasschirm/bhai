@@ -84,9 +84,12 @@ If no tier produces a ref, throws `NoModelError`.
 4. **Capability re-application**: new model's `capabilities()` govern the
    next `chat()` call; this function only ensures `activeModelRef` is
    updated before the next cycle reads it.
-5. **`model.changed` event**: fires with `{ model, previousModel, source }`
+5. **`model.selected` event**: fires with `{ model, previousModel, source }`
    once the switch takes effect (immediately or at deferred application
    point). `source` is `'set'`, `'load'`, or `'resolve'`.
+
+   Note: this is the **active-model selection** event, not the catalogue
+   lifecycle `model.changed` event emitted by `bh.listModels()`.
 
 ## Error types
 
