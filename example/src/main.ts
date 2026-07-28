@@ -13,6 +13,7 @@
 import { BHAI } from "@lucasschirm/bhai"
 import { createMcpPlugin } from "@lucasschirm/bhai/plugins/mcp"
 import { type MLCEngineInstance, WebLLM } from "@lucasschirm/bhai/plugins/webllm"
+import "@lucasschirm/litjs-typeahead"
 import type { LitTypeahead } from "@lucasschirm/litjs-typeahead"
 
 import { createChatController } from "./app/chat-controller.js"
