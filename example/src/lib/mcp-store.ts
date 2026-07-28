@@ -19,21 +19,38 @@ const STORAGE_KEY = "bhai.mcp.servers"
  */
 const STORAGE_VERSION = 1
 
-/**
- * @typedef {Object} StoredServer
- * @property {string} url - Streamable-HTTP MCP endpoint.
- * @property {string} [name] - BHAI-local server name; namespaces the tools.
- * @property {Record<string, string>} [headers] - Extra request headers.
- */
+/** One persisted server entry. */
+export interface StoredServer {
+	/** Streamable-HTTP MCP endpoint. */
+	url: string
+	/** BHAI-local server name; namespaces the tools. */
+	name?: string
+	/** Extra request headers. */
+	headers?: Record<string, string>
+}
+
+/** Result of parsing the headers textarea. */
+export interface ParsedHeaders {
+	/** Successfully parsed `Key: Value` pairs. */
+	headers: Record<string, string>
+	/** One message per malformed line, reported rather than dropped. */
+	errors: string[]
+}
+
+/** The subset of a captured error {@link errorHint} needs to interpret it. */
+export interface HintableError {
+	name?: string
+	message?: string
+}
 
 /**
  * Resolve the storage backend, tolerating environments that have no
  * `localStorage` at all (Node, or a browser with storage disabled entirely).
  *
- * @param {Storage | undefined} storage - Explicit backend, for tests
- * @returns {Storage | null} The backend to use, or null if none is available
+ * @param storage - Explicit backend, for tests
+ * @returns The backend to use, or null if none is available
  */
-function resolveStorage(storage) {
+function resolveStorage(storage: Storage | undefined): Storage | null {
 	if (storage) return storage
 	try {
 		return typeof localStorage === "undefined" ? null : localStorage
@@ -51,14 +68,14 @@ function resolveStorage(storage) {
  * app must never fail to start because of what is in storage, and the user
  * can always re-add a server.
  *
- * @param {Storage} [storage] - Storage backend (defaults to `localStorage`)
- * @returns {StoredServer[]} The stored servers, or an empty list
+ * @param storage - Storage backend (defaults to `localStorage`)
+ * @returns The stored servers, or an empty list
  */
-export function loadServers(storage) {
+export function loadServers(storage?: Storage): StoredServer[] {
 	const backend = resolveStorage(storage)
 	if (!backend) return []
 
-	let raw
+	let raw: string | null
 	try {
 		raw = backend.getItem(STORAGE_KEY)
 	} catch {
@@ -73,7 +90,13 @@ export function loadServers(storage) {
 		}
 		// Filter rather than trust: a hand-edited entry without a `url` would
 		// otherwise become a server card that can never connect.
-		return parsed.servers.filter((s) => s && typeof s.url === "string" && s.url.length > 0)
+		return parsed.servers.filter(
+			(s: unknown): s is StoredServer =>
+				typeof s === "object" &&
+				s !== null &&
+				typeof (s as StoredServer).url === "string" &&
+				(s as StoredServer).url.length > 0,
+		)
 	} catch {
 		return []
 	}
@@ -90,11 +113,11 @@ export function loadServers(storage) {
  * Silently no-ops when storage is unavailable or full — persistence is a
  * convenience here, and losing it must not break the session in progress.
  *
- * @param {StoredServer[]} servers - Servers to persist
- * @param {Storage} [storage] - Storage backend (defaults to `localStorage`)
- * @returns {boolean} Whether the write succeeded
+ * @param servers - Servers to persist
+ * @param storage - Storage backend (defaults to `localStorage`)
+ * @returns Whether the write succeeded
  */
-export function saveServers(servers, storage) {
+export function saveServers(servers: StoredServer[], storage?: Storage): boolean {
 	const backend = resolveStorage(storage)
 	if (!backend) return false
 
@@ -114,14 +137,11 @@ export function saveServers(servers, storage) {
  * reported rather than dropped silently, so a mistyped header does not
  * present as a mysterious 401.
  *
- * @param {string} text - Raw textarea contents
- * @returns {{ headers: Record<string, string>, errors: string[] }}
+ * @param text - Raw textarea contents
  */
-export function parseHeaderLines(text) {
-	/** @type {Record<string, string>} */
-	const headers = {}
-	/** @type {string[]} */
-	const errors = []
+export function parseHeaderLines(text: string): ParsedHeaders {
+	const headers: Record<string, string> = {}
+	const errors: string[] = []
 
 	if (!text) return { headers, errors }
 
@@ -155,14 +175,14 @@ export function parseHeaderLines(text) {
  * nothing else, so an `ws://` or `stdio://` entry is a mistake worth catching
  * before it becomes a confusing fetch failure.
  *
- * @param {string} url - The candidate endpoint
- * @returns {string | null} An error message, or null when the URL is usable
+ * @param url - The candidate endpoint
+ * @returns An error message, or null when the URL is usable
  */
-export function validateServerUrl(url) {
+export function validateServerUrl(url: string): string | null {
 	const trimmed = (url ?? "").trim()
 	if (trimmed === "") return "Enter the server's HTTP endpoint URL."
 
-	let parsed
+	let parsed: URL
 	try {
 		parsed = new URL(trimmed)
 	} catch {
@@ -185,10 +205,10 @@ export function validateServerUrl(url) {
  * fetch" with no detail available to JavaScript. Without this hint the bug
  * dialog would show a true but useless message.
  *
- * @param {{ name?: string, message?: string } | null | undefined} error
- * @returns {string | null} A hint to display, or null
+ * @param error - The captured error, or a nullish value
+ * @returns A hint to display, or null
  */
-export function errorHint(error) {
+export function errorHint(error: HintableError | null | undefined): string | null {
 	if (!error) return null
 	const name = error.name ?? ""
 	const message = error.message ?? ""

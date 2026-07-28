@@ -5,10 +5,10 @@
  *
  * Returns a one-decimal-place string (e.g., "42.1"), or an em dash ("—") for null/undefined input.
  *
- * @param {number | null | undefined} n - Tokens per second, or null/undefined for no data
- * @returns {string} Formatted rate or em dash placeholder
+ * @param n - Tokens per second, or null/undefined for no data
+ * @returns Formatted rate or em dash placeholder
  */
-export function formatTps(n) {
+export function formatTps(n: number | null | undefined): string {
 	if (n === null || n === undefined) {
 		return "—"
 	}
@@ -20,10 +20,10 @@ export function formatTps(n) {
  *
  * Returns a string like "12,345" for large numbers, "0" for zero.
  *
- * @param {number} n - Token count
- * @returns {string} Thousands-separated integer string
+ * @param n - Token count
+ * @returns Thousands-separated integer string
  */
-export function formatTokens(n) {
+export function formatTokens(n: number): string {
 	return Math.floor(n).toLocaleString("en-US")
 }
 
@@ -33,10 +33,10 @@ export function formatTokens(n) {
  * Uses 1024-based units (KB, MB, GB) with one decimal place.
  * Values < 1024 are shown as "N B".
  *
- * @param {number} n - Byte count
- * @returns {string} Human-readable byte string, e.g., "1.5 KB"
+ * @param n - Byte count
+ * @returns Human-readable byte string, e.g., "1.5 KB"
  */
-export function formatBytes(n) {
+export function formatBytes(n: number): string {
 	if (n < 1024) {
 		return `${Math.floor(n)} B`
 	}
@@ -54,9 +54,9 @@ export function formatBytes(n) {
  *
  * Returns a string with one decimal place, e.g., "0.4s" or "12.3s".
  *
- * @param {number} s - Duration in seconds
- * @returns {string} Formatted seconds string
+ * @param s - Duration in seconds
+ * @returns Formatted seconds string
  */
-export function formatSeconds(s) {
+export function formatSeconds(s: number): string {
 	return `${s.toFixed(1)}s`
 }

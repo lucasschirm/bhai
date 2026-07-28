@@ -1,0 +1,22 @@
+{
+	// The example is typechecked as its own project rather than being folded into
+	// the root `include`. Two settings genuinely differ: it needs the DOM lib
+	// (the root project is environment-agnostic by design, ARCHITECTURE.md § 5),
+	// and it resolves `@lucasschirm/bhai` through the workspace link's published
+	// `exports` — which means `pnpm run build` must have produced `dist/` before
+	// `tsc -p example` can succeed. Keeping it separate stops that build
+	// dependency from leaking into the root typecheck.
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		// `@webgpu/types` is what puts `navigator.gpu` on the DOM lib's Navigator;
+		// the WebGPU guard in `app/webllm-engine.ts` does not typecheck without it.
+		"types": ["vite/client", "@webgpu/types"],
+		"noEmit": true,
+		// Inherited from the root config, where they exist for tsup's `dts` build.
+		// Nothing is emitted here, so turn them off rather than leave them dangling.
+		"declaration": false,
+		"declarationMap": false
+	},
+	"include": ["src", "vite.config.ts"]
+}

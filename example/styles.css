@@ -416,6 +416,25 @@ body {
 	color: var(--muted);
 }
 
+.telemetry-subtext-small {
+	font-size: 11px;
+}
+
+/* MLC's raw status line under the cold-start gauge. */
+.cold-start-status {
+	font-size: 11px;
+	color: var(--muted);
+}
+
+/* The one message that replaces the whole stats region: a fatal error. */
+.telemetry-message {
+	padding: 1rem;
+	color: var(--warm);
+	font-family: var(--font-body);
+	font-size: 13px;
+	line-height: 1.5;
+}
+
 /* Gauge (decode tok/s, download progress, context usage) */
 .gauge-container {
 	display: flex;
@@ -626,9 +645,117 @@ details[open] > summary::before {
 	gap: 0.5rem;
 }
 
+/*
+ * Both empty states are siblings of the List.js-managed <ul>, never items
+ * inside it: List.js clears every child of `.js-list` on each update, so an
+ * empty state placed within would be wiped on the first render.
+ */
 .mcp-empty {
+	margin: 0;
 	font-size: 12px;
 	color: var(--muted);
+}
+
+/* Search + sort row above the server list. Hidden until a server exists. */
+.mcp-servers {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.mcp-list-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+}
+
+.mcp-list-controls[hidden] {
+	display: none;
+}
+
+.mcp-search {
+	width: 100%;
+	padding: 0.3rem 0.45rem;
+	background: var(--graphite-900);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	color: var(--text);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.4;
+	transition: all 150ms ease;
+}
+
+.mcp-search::placeholder {
+	color: var(--muted);
+}
+
+.mcp-search:hover {
+	border-color: var(--cold);
+}
+
+.mcp-search:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 1px;
+	border-color: var(--cold);
+}
+
+.mcp-sort-group {
+	display: flex;
+	gap: 0.375rem;
+}
+
+.mcp-sort {
+	flex: 1;
+	padding: 0.2rem 0.4rem;
+	background: transparent;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	color: var(--muted);
+	font-family: var(--font-display);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	cursor: pointer;
+	transition: all 150ms ease;
+}
+
+.mcp-sort:hover {
+	color: var(--text);
+	border-color: var(--cold);
+}
+
+.mcp-sort:focus-visible {
+	outline: 2px solid var(--cold);
+	outline-offset: 1px;
+}
+
+/*
+ * `asc` / `desc` are stamped on the button by List.js itself, so the caret is
+ * driven by the library's own state rather than a duplicate we would have to
+ * keep in step.
+ */
+.mcp-sort.asc,
+.mcp-sort.desc {
+	color: var(--text);
+	border-color: var(--cold);
+}
+
+.mcp-sort.asc::after {
+	content: " ▲";
+}
+
+.mcp-sort.desc::after {
+	content: " ▼";
+}
+
+/* Per-server tool filter, shown only above the tool-count threshold. */
+.mcp-tools .mcp-search {
+	margin: 0.25rem 0;
+}
+
+.mcp-tool-empty {
+	padding: 0.25rem 0;
 }
 
 .mcp-server {
