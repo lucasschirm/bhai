@@ -90,10 +90,7 @@ body {
 	flex: 1;
 	min-width: 180px;
 	max-width: 300px;
-	padding: 0.5rem 0.75rem;
 	background: var(--graphite-700);
-	border: 1px solid var(--line);
-	border-radius: 4px;
 	color: var(--text);
 	font-family: var(--font-body);
 	font-size: 14px;
