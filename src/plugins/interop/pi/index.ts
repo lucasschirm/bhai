@@ -169,6 +169,8 @@ export async function runPiExtension(
 	// Accumulate flag registrations
 	const flagDefaults = new Map<string, { default: unknown; description?: string }>()
 	const flagSchemaProperties: Record<string, JSONSchema> = {}
+	// Flush any `pi.events.emit()` calls a sync factory fires before returning.
+	const pendingEmits: Promise<unknown>[] = []
 
 	// Track conversation.created events to maintain most-recent conversation
 	bh.on("conversation.created", ({ conversation }: { conversation: BHAIConversation }) => {
@@ -214,7 +216,7 @@ export async function runPiExtension(
 		// Row 9: before_provider_request/after_provider_response -> bh.on('request')
 		// Row 10: turn_start/turn_end -> conversation.on('turn')
 		// Row 11: session_before_compact/session_compact -> conversation.on('compact')
-		// Row 12: model_select/thinking_level_select -> bh.on('model.changed'/'model.resolve')
+		// Row 12: model_select/thinking_level_select -> bh.on('model.selected'/'model.resolve')
 		// Row 13: session_start -> bh.on('conversation.created')
 		// Row 15: session_shutdown -> bh.on('dispose')
 		on(event: string, handler: PiHandler): void {
@@ -394,8 +396,8 @@ export async function runPiExtension(
 					break
 				}
 				case "model_select": {
-					// Row 12: model.changed event
-					bh.on("model.changed", async (payload) => {
+					// Row 12: model.selected event
+					bh.on("model.selected", async (payload) => {
 						await handler(payload)
 					})
 					break
@@ -536,7 +538,7 @@ export async function runPiExtension(
 			emit(name: string, payload: unknown): void {
 				// Row 16: custom events, auto-prefix un-namespaced names
 				const fullName = name.includes(".") ? name : `${derivedPluginName}.${name}`
-				bh.emit(fullName, payload)
+				pendingEmits.push(bh.emit(fullName, payload))
 			},
 		},
 
@@ -549,6 +551,9 @@ export async function runPiExtension(
 
 	// Run the factory with the shim API
 	await factory(piApi)
+	// Ensure any synchronous pi.events.emit() calls have drained before the
+	// adapter call returns.
+	await Promise.all(pendingEmits)
 
 	// After factory runs, declare the config schema if any flags were registered
 	if (Object.keys(flagSchemaProperties).length > 0) {

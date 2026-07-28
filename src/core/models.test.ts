@@ -12,8 +12,8 @@ import type { BHAIDriver, ModelInfo } from "../types/index.js"
 import {
 	AmbiguousModelError,
 	type ConversationModelState,
-	type ModelChangedPayload,
 	ModelNotFoundError,
+	type ModelSelectedPayload,
 	ModelUnavailableError,
 	NoModelError,
 	listModels,
@@ -260,8 +260,8 @@ describe("setModel", () => {
 	function makeState(
 		activeModelRef = "ollama/llama3.3:70b",
 		streaming = false,
-	): { state: ConversationModelState; events: ModelChangedPayload[] } {
-		const events: ModelChangedPayload[] = []
+	): { state: ConversationModelState; events: ModelSelectedPayload[] } {
+		const events: ModelSelectedPayload[] = []
 		const state: ConversationModelState = {
 			activeModelRef,
 			isStreaming: () => streaming,
@@ -276,7 +276,7 @@ describe("setModel", () => {
 
 	it("applies immediately when not streaming", () => {
 		const { state, events } = makeState()
-		const emit = vi.fn((p: ModelChangedPayload) => events.push(p))
+		const emit = vi.fn((p: ModelSelectedPayload) => events.push(p))
 
 		const result = setModel(state, "webllm/Llama-3.2-3B", "set", emit)
 
@@ -308,7 +308,7 @@ describe("setModel", () => {
 	it("queues the switch when streaming, applies after settle", () => {
 		const { state, events } = makeState()
 		state.isStreaming = () => true
-		const emit = vi.fn((p: ModelChangedPayload) => events.push(p))
+		const emit = vi.fn((p: ModelSelectedPayload) => events.push(p))
 
 		const result = setModel(state, "webllm/Llama-3.2-3B", "set", emit)
 
@@ -332,23 +332,23 @@ describe("setModel", () => {
 		})
 	})
 
-	it("fires model.changed with source: 'set'", () => {
+	it("fires model.selected with source: 'set'", () => {
 		const { state, events } = makeState()
-		const emit = vi.fn((p: ModelChangedPayload) => events.push(p))
+		const emit = vi.fn((p: ModelSelectedPayload) => events.push(p))
 		setModel(state, "webllm/Llama-3.2-3B", "set", emit)
 		expect(events[0]?.source).toBe("set")
 	})
 
-	it("fires model.changed with source: 'load'", () => {
+	it("fires model.selected with source: 'load'", () => {
 		const { state, events } = makeState()
-		const emit = vi.fn((p: ModelChangedPayload) => events.push(p))
+		const emit = vi.fn((p: ModelSelectedPayload) => events.push(p))
 		setModel(state, "webllm/Llama-3.2-3B", "load", emit)
 		expect(events[0]?.source).toBe("load")
 	})
 
-	it("fires model.changed with source: 'resolve'", () => {
+	it("fires model.selected with source: 'resolve'", () => {
 		const { state, events } = makeState()
-		const emit = vi.fn((p: ModelChangedPayload) => events.push(p))
+		const emit = vi.fn((p: ModelSelectedPayload) => events.push(p))
 		setModel(state, "webllm/Llama-3.2-3B", "resolve", emit)
 		expect(events[0]?.source).toBe("resolve")
 	})

@@ -150,13 +150,19 @@ All numbers are formatted for readability (`formatTps`, `formatTokens`, etc.).
 
 ### Model selection
 
-The model picker is a `<lit-typeahead>` custom element from
-`@lucasschirm/litjs-typeahead`. `main.ts` populates it with every model that the
-installed `@mlc-ai/web-llm` package advertises in
-`webllm.prebuiltAppConfig.model_list`:
+The model picker is a custom `<bhai-model-select>` wrapper around the
+`<lit-typeahead>` element from `@lucasschirm/litjs-typeahead`. `main.ts` seeds
+it from `bh.listModels()` and keeps it in sync via the `models.changed` event,
+so the catalogue reacts to driver and `modelSource` changes without any direct
+DOM manipulation. The WebLLM driver is constructed with the installed
+`@mlc-ai/web-llm` package's `prebuiltAppConfig` so the catalogue is available
+before the engine is fully warmed:
 
-```javascript
-const modelIds = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
+```typescript
+const driver = new WebLLM({
+  engine,
+  appConfig: prebuiltAppConfig,
+})
 ```
 
 The default selection prefers a Qwen3 model because it emits reasoning blocks,

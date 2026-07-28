@@ -24,7 +24,7 @@ All 15 non-idle pi event names map to BHAI framework/conversation events:
 - **before_provider_request/after_provider_response** → conversation `request`
 - **turn_start/turn_end** → conversation `turn`
 - **session_before_compact/session_compact** → conversation `compact` (1-to-2 fan-out)
-- **model_select/thinking_level_select** → `model.changed`/`model.resolve` (framework events)
+- **model_select/thinking_level_select** → `model.selected`/`model.resolve` (framework events)
 - **session_start** → `conversation.created` (framework event)
 - **session_shutdown** → `dispose` (framework event)
 - **Custom events** → auto-prefixed on `bh.emit`/`bh.on` as `${pluginName}.${eventName}`

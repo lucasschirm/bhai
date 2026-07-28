@@ -42,7 +42,7 @@ single model-selection typeahead (`@lucasschirm/litjs-typeahead`).
 - **`styles.css`** — Layout and component styling; every value is read from
   `variables.css` via `var(--*)`.
 - **`index.html`** — Semantic HTML5 structure plus the custom element tags:
-  `<bhai-status-indicator>`, `<lit-typeahead id="model-select">`,
+  `<bhai-status-indicator>`, `<bhai-model-select id="model-select">`,
   `<bhai-conversation>`, `<bhai-cold-start>`, `<bhai-telemetry>`,
   `<bhai-mcp-add-form>`, `<bhai-mcp-error-dialog>`,
   `<bhai-mcp-server-list>`, and `<bhai-composer>`. Loads `variables.css` and
@@ -56,18 +56,22 @@ single model-selection typeahead (`@lucasschirm/litjs-typeahead`).
 
 The only file that knows the `index.html` id contract. Importing a component
 module registers its custom element, so `main.ts` side-effect imports every
-component and then resolves them with `byId()`. It wires the elements to the two
-orchestrators and gets out of the way.
+component and then resolves them with `byId()`. It seeds the model picker from
+`bh.listModels()`, subscribes to `models.changed` to keep it reactive, and wires
+the elements to the two orchestrators.
 
 ### `src/app/` — orchestration (no DOM)
 
-- **`webllm-engine.ts`** — WebGPU capability check, full model list from
-  `webllm.prebuiltAppConfig.model_list`, and `MLCEngine` creation with the
-  cold-start progress callback.
+- **`webllm-engine.ts`** — WebGPU capability check and `MLCEngine` creation
+  with the cold-start progress callback. Exports `prebuiltAppConfig` from
+  `@mlc-ai/web-llm` so the WebLLM driver can report a catalogue before the
+  engine is warmed.
 - **`chat-controller.ts`** — Conversation lifecycle, send/abort, TTFT
   measurement, and the `runtimeStatsText()` → telemetry pipeline. Narrows the
   `message.delta` payload at one boundary, because `ConversationEvents` carries
-  an index signature and every payload arrives as `unknown`.
+  an index signature and every payload arrives as `unknown`. Accepts a
+  qualified model ref and reads `contextWindow` from the selected catalogue
+  entry.
 - **`mcp-controller.ts`** — Subscribes the server list to `McpManager`, wires
   the add-server form, persists the server list, and owns the card-level event
   listeners (`bhai-refresh`, `bhai-retry`, `bhai-remove`, `bhai-show-error`).
@@ -84,6 +88,7 @@ CSS variables continue to drive their appearance.
 | Module | Custom element | Owns |
 | --- | --- | --- |
 | `status-indicator.ts` | `<bhai-status-indicator>` | statusbar dot + label |
+| `model-select.ts` | `<bhai-model-select>` | reactive model picker, consumes `bh.listModels()` and `models.changed` |
 | `composer.ts` | `<bhai-composer>` | Send/Stop state, text, keyboard |
 | `conversation-view.ts` | `<bhai-conversation>` | user bubbles, assistant turns, inline errors |
 | `cold-start-panel.ts` | `<bhai-cold-start>` | download gauge |
@@ -117,12 +122,12 @@ look back up on every delta.
 
 ## Model selection
 
-The bare `<select>` was replaced by `<lit-typeahead>` from
-`@lucasschirm/litjs-typeahead`. `main.ts` passes every model in
-`webllm.prebuiltAppConfig.model_list` as `.items`, sets `.value` to the default
-model, and listens for the `change` event (detail: `{ value: string }`) to
-switch models. The default prefers a Qwen3 model because it emits reasoning
-blocks that the Thought panel surfaces.
+The bare `<select>` was replaced by a reactive `<bhai-model-select>` wrapper that
+owns a `<lit-typeahead>` from `@lucasschirm/litjs-typeahead`. `main.ts` seeds
+`bhai-model-select.models` from `bh.listModels()`, subscribes to `models.changed`
+to refresh the list, and listens for the custom `bhai-change` event
+(detail: `{ model: ModelInfo, ref: string }`) to switch conversations. The
+default still prefers a Qwen3 model when available.
 
 ## MCP filtering and sorting
 

@@ -51,13 +51,17 @@ Implemented:
 - **Model selection** (`src/core/models.ts`) — `parseModelRef`,
   `resolveModelRef` (bare-id disambiguation), `listModels` (catalogue merge),
   `resolveConversationModel` (four-tier resolution), `setModel` (switching
-  with deferred application + `model.changed` event). Error types:
+  with deferred application + `model.selected` event). Error types:
   `AmbiguousModelError`, `ModelNotFoundError`, `NoModelError`,
   `ModelUnavailableError`.
 - **Conversations & the agent loop** — see `docs/core/conversation.md` for
   full detail. Summary: conversation surface, system-prompt layering, the
   agent loop with tool execution, loop termination & guardrails, serialization,
   storage interfaces, concurrent input steering, and compaction pipeline.
+- **Model lifecycle events** (`src/core/bhai.ts`, `docs/core/events.md`) —
+  `model.added`, `model.changed`, `model.removed`, and `models.changed` are
+  dispatched on every `listModels()` refresh, including driver registration,
+  `init()`, and plugin activation toggles.
 - **Kernel side-channels** (`src/core/complete.ts`, `src/core/embed.ts`) —
   `complete()` one-shot LLM calls and `embed()` embedding side-channel, both
   with full model-resolution reuse and capability guarding.
@@ -93,6 +97,7 @@ rationale).
 - `src/index.ts` — root superset barrel (re-exports `core/`, `types/`, and
   every `plugins/*` subpath).
 - `src/core/bhai.ts` — the `BHAI` kernel class. See `docs/core/kernel.md`.
+- `docs/core/events.md` — full catalogue of framework and conversation events.
 - `docs/` — implementation documentation. See `docs/ARCHITECTURE.md` for the
   index of per-subsystem docs.
 - `example/` — WebLLM chat browser example (distinct from `examples/`). A
