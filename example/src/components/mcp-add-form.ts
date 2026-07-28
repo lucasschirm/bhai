@@ -1,6 +1,7 @@
-/** @file The MCP panel's "Add HTTP server" form. */
+/** @file The MCP panel's "Add HTTP server" form as a reusable Lit element. */
 
-import { byId } from "../lib/dom.js"
+import { LitElement, html } from "lit"
+import { customElement, query } from "lit/decorators.js"
 
 /** Raw field values, unvalidated — parsing lives in `lib/mcp-store.ts`. */
 export interface McpFormValues {
@@ -12,73 +13,142 @@ export interface McpFormValues {
 	headersText: string
 }
 
-/** Controller returned by {@link createMcpAddForm}. */
-export interface McpAddForm {
+/**
+ * MCP add-form custom element.
+ *
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
+ *
+ * @fires bhai-submit - Dispatched when the user submits the form. Call
+ *   `event.preventDefault()` if you want to handle it entirely in JavaScript.
+ */
+@customElement("bhai-mcp-add-form")
+export class BhaiMcpAddForm extends LitElement {
+	override createRenderRoot() {
+		return this
+	}
+
+	@query("input[name=url]")
+	private _url!: HTMLInputElement
+
+	@query("input[name=name]")
+	private _name!: HTMLInputElement
+
+	@query("textarea[name=headers]")
+	private _headers!: HTMLTextAreaElement
+
+	@query("button[type=submit]")
+	private _submit!: HTMLButtonElement
+
+	@query("p[role=alert]")
+	private _error!: HTMLParagraphElement
+
+	private _onSubmitHandler: (() => void) | null = null
+
 	/** Read the current field values. */
-	values(): McpFormValues
+	values(): McpFormValues {
+		return {
+			url: this._url.value,
+			name: this._name.value,
+			headersText: this._headers.value,
+		}
+	}
+
 	/** Disable the fields and relabel the submit button while connecting. */
-	setBusy(busy: boolean): void
+	setBusy(busy: boolean): void {
+		this._submit.disabled = busy
+		this._submit.textContent = busy ? "Connecting…" : "Connect"
+		this._url.disabled = busy
+		this._name.disabled = busy
+		this._headers.disabled = busy
+	}
+
 	/** Show a validation or connection error above the submit button. */
-	showError(message: string): void
+	showError(message: string): void {
+		this._error.textContent = message
+		this._error.hidden = false
+	}
+
 	/** Clear the error line. */
-	clearError(): void
+	clearError(): void {
+		this._error.textContent = ""
+		this._error.hidden = true
+	}
+
 	/** Clear the fields and collapse the disclosure. */
-	reset(): void
+	reset(): void {
+		const form = this.querySelector("form")
+		form?.reset()
+		this.clearError()
+		const details = this.querySelector("details")
+		if (details) details.open = false
+	}
+
 	/** Register the submit handler. Called once, after the controllers exist. */
-	onSubmit(handler: () => void): void
+	onSubmit(handler: () => void): void {
+		this._onSubmitHandler = handler
+	}
+
+	override render() {
+		return html`
+			<details class="mcp-add">
+				<summary>Add HTTP server</summary>
+				<form @submit=${this._onSubmit} novalidate>
+					<label class="mcp-field">
+						<span>Endpoint URL</span>
+						<input
+							name="url"
+							type="url"
+							required
+							autocomplete="off"
+							spellcheck="false"
+							placeholder="https://example.com/mcp"
+						/>
+					</label>
+
+					<label class="mcp-field">
+						<span>Name <em>optional</em></span>
+						<input
+							name="name"
+							type="text"
+							autocomplete="off"
+							spellcheck="false"
+							placeholder="derived from the hostname"
+						/>
+					</label>
+
+					<label class="mcp-field">
+						<span>Headers <em>optional</em></span>
+						<textarea
+							name="headers"
+							rows="2"
+							spellcheck="false"
+							placeholder="Authorization: Bearer …"
+						></textarea>
+					</label>
+
+					<p class="mcp-note">
+						Saved in this browser's localStorage, headers included — don't paste a
+						token you wouldn't leave on disk.
+					</p>
+
+					<p class="mcp-form-error" role="alert" hidden></p>
+
+					<button type="submit">Connect</button>
+				</form>
+			</details>
+		`
+	}
+
+	private _onSubmit(event: SubmitEvent): void {
+		event.preventDefault()
+		this.dispatchEvent(new CustomEvent("bhai-submit", { bubbles: true, composed: true }))
+		this._onSubmitHandler?.()
+	}
 }
 
-/** Ids of the inputs whose disabled state moves together. */
-const FIELD_IDS = ["mcp-url", "mcp-name", "mcp-headers"]
-
-/**
- * Own the add-server form.
- *
- * @param details - The `<details>` disclosure wrapping the form
- * @param form - The form itself
- */
-export function createMcpAddForm(details: HTMLDetailsElement, form: HTMLFormElement): McpAddForm {
-	const url = byId<HTMLInputElement>("mcp-url", form)
-	const name = byId<HTMLInputElement>("mcp-name", form)
-	const headers = byId<HTMLTextAreaElement>("mcp-headers", form)
-	const submit = byId<HTMLButtonElement>("mcp-add-submit", form)
-	const error = byId("mcp-add-error", form)
-
-	return {
-		values() {
-			return { url: url.value, name: name.value, headersText: headers.value }
-		},
-
-		setBusy(busy) {
-			submit.disabled = busy
-			submit.textContent = busy ? "Connecting…" : "Connect"
-			for (const id of FIELD_IDS) {
-				byId<HTMLInputElement>(id, form).disabled = busy
-			}
-		},
-
-		showError(message) {
-			error.textContent = message
-			error.hidden = false
-		},
-
-		clearError() {
-			error.textContent = ""
-			error.hidden = true
-		},
-
-		reset() {
-			form.reset()
-			error.textContent = ""
-			error.hidden = true
-			details.open = false
-		},
-
-		onSubmit(handler) {
-			form.addEventListener("submit", (event) => {
-				event.preventDefault()
-				handler()
-			})
-		},
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-mcp-add-form": BhaiMcpAddForm
 	}
 }

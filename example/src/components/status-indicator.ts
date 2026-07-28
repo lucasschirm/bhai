@@ -1,25 +1,45 @@
-/** @file The statusbar's dot + label. */
+/** @file The statusbar's dot + label as a reusable Lit element. */
+
+import { LitElement, html } from "lit"
+import { customElement, property } from "lit/decorators.js"
 
 /** Lifecycle states the dot renders, via its `data-state` attribute. */
 export type StatusState = "cold" | "warming" | "ready" | "generating"
 
-/** Controller returned by {@link createStatusIndicator}. */
-export interface StatusIndicator {
+/**
+ * Status indicator custom element.
+ *
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
+ */
+@customElement("bhai-status-indicator")
+export class BhaiStatusIndicator extends LitElement {
+	override createRenderRoot() {
+		return this
+	}
+
+	@property({ type: String, reflect: true })
+	state: StatusState = "cold"
+
+	@property({ type: String })
+	label = ""
+
 	/** Set the dot's state and the text beside it. */
-	set(state: StatusState, label: string): void
+	set(state: StatusState, label: string): void {
+		this.state = state
+		this.label = label
+	}
+
+	override render() {
+		return html`
+			<span class="status-dot" data-state=${this.state}></span>
+			<span class="status-label">${this.label}</span>
+		`
+	}
 }
 
-/**
- * Own the status dot and its label.
- *
- * @param dot - The element whose `data-state` drives the dot's color/animation
- * @param label - The element holding the human-readable state
- */
-export function createStatusIndicator(dot: HTMLElement, label: HTMLElement): StatusIndicator {
-	return {
-		set(state, text) {
-			dot.dataset.state = state
-			label.textContent = text
-		},
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-status-indicator": BhaiStatusIndicator
 	}
 }

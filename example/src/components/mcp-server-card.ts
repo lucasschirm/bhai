@@ -1,15 +1,16 @@
 /**
- * @file One MCP server card.
+ * @file One MCP server card as a reusable Lit element.
  *
- * Every node here is built with `createElement` + `textContent`, and every
- * indexed value with `setAttribute`. That is not stylistic: the server name,
- * tool names, tool descriptions and error messages all originate from a remote
- * endpoint the user just pasted a URL for. They are untrusted input on the same
- * footing as model output, and `mcp-server-card.test.ts` guards it.
+ * Every text binding in the template is automatically escaped by lit-html. The
+ * server name, tool names, tool descriptions and error messages all originate
+ * from a remote endpoint the user pasted a URL for, so this escaping is the
+ * security boundary. `mcp-server-card.test.ts` still guards it.
  */
 
 import type { McpServerState } from "@lucasschirm/bhai/plugins/mcp"
-import { el, iconButton } from "../lib/dom.js"
+import { LitElement, html } from "lit"
+import { customElement, property } from "lit/decorators.js"
+import "./mcp-tool-list.js"
 
 /**
  * The `data-*` keys each card carries for the server list's search and sort.
@@ -38,95 +39,127 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 /**
- * The status line under the server name.
+ * MCP server-card custom element.
  *
- * @param state - The server snapshot to describe
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
+ *
+ * @fires bhai-refresh - The user asked to refresh this server's tools. Detail: `{ id: string }`.
+ * @fires bhai-retry - The user asked to retry this failed connection. Detail: `{ id: string }`.
+ * @fires bhai-remove - The user asked to detach this server. Detail: `{ id: string }`.
+ * @fires bhai-show-error - The user asked to inspect this server's error. Detail: `{ id: string }`.
  */
-function statusText(state: McpServerState): string {
-	const label = STATUS_LABEL[state.status] ?? state.status
+@customElement("bhai-mcp-server-card")
+export class BhaiMcpServerCard extends LitElement {
+	override createRenderRoot() {
+		return this
+	}
 
-	if (state.status === "connected") {
-		// The tool count lives on the `<details>` summary below, so repeating it
-		// here would say the same thing twice. Call out the empty case, which has
-		// no summary to speak for it.
-		return state.tools.length === 0 ? `${label} · no tools` : label
+	@property({ type: Object })
+	state!: McpServerState
+
+	override willUpdate(changed: Map<string, unknown>) {
+		if (changed.has("state") && this.state) {
+			const tools = this.state.tools.map((tool) => tool.shortName).join(" ")
+			this.dataset.status = this.state.status
+			this.dataset.name = this.state.serverName
+			this.dataset.tools = tools
+		}
 	}
-	if (state.status === "error" && state.error) {
-		// The name alone on this line; the full message is one click away in the
-		// dialog. A 280px rail cannot show a stack trace usefully.
-		return `${label} · ${state.error.name}`
+
+	override render() {
+		const state = this.state
+		const statusText = this._statusText()
+		const buttons: HTMLButtonElement[] = []
+
+		if (state.status === "connected") {
+			buttons.push(this._iconButton("⟳", `Refresh tools for ${state.serverName}`, "refresh"))
+		}
+		if (state.status === "error") {
+			buttons.push(this._iconButton("🐛", `Error details for ${state.serverName}`, "show-error"))
+			buttons.push(this._iconButton("↻", `Retry connecting to ${state.serverName}`, "retry"))
+		}
+		buttons.push(this._iconButton("✕", `Remove ${state.serverName}`, "remove"))
+
+		return html`
+			<div class="mcp-server-head">
+				<span class="status-dot" data-state=${state.status}></span>
+				<span class="mcp-server-name" title=${state.config.url}>${state.serverName}</span>
+				<div class="mcp-actions">
+					${buttons}
+				</div>
+			</div>
+			<div class="mcp-server-status">${statusText}</div>
+			<div class="mcp-server-tools">
+				${
+					state.status === "connected" && state.tools.length > 0
+						? html`
+							<bhai-mcp-tool-list
+								.serverName=${state.serverName}
+								.tools=${state.tools}
+							></bhai-mcp-tool-list>
+					  `
+						: null
+				}
+			</div>
+		`
 	}
-	return label
+
+	private _statusText(): string {
+		const state = this.state
+		const label = STATUS_LABEL[state.status] ?? state.status
+
+		if (state.status === "connected") {
+			return state.tools.length === 0 ? `${label} · no tools` : label
+		}
+		if (state.status === "error" && state.error) {
+			return `${label} · ${state.error.name}`
+		}
+		return label
+	}
+
+	private _iconButton(
+		glyph: string,
+		label: string,
+		action: "refresh" | "retry" | "remove" | "show-error",
+	): HTMLButtonElement {
+		const button = document.createElement("button")
+		button.type = "button"
+		button.className = "mcp-icon-button"
+		button.textContent = glyph
+		button.title = label
+		button.setAttribute("aria-label", label)
+		button.addEventListener("click", () => this._dispatch(action))
+		return button
+	}
+
+	private _dispatch(action: "refresh" | "retry" | "remove" | "show-error"): void {
+		const detail = { id: this.state.id }
+		switch (action) {
+			case "refresh":
+				this.dispatchEvent(
+					new CustomEvent("bhai-refresh", { detail, bubbles: true, composed: true }),
+				)
+				break
+			case "retry":
+				this.dispatchEvent(new CustomEvent("bhai-retry", { detail, bubbles: true, composed: true }))
+				break
+			case "remove":
+				this.dispatchEvent(
+					new CustomEvent("bhai-remove", { detail, bubbles: true, composed: true }),
+				)
+				break
+			case "show-error":
+				this.dispatchEvent(
+					new CustomEvent("bhai-show-error", { detail, bubbles: true, composed: true }),
+				)
+				break
+		}
+	}
 }
 
-/**
- * The per-status action buttons.
- *
- * @param state - The server snapshot the buttons act on
- * @param handlers - Where the clicks go
- */
-function actions(state: McpServerState, handlers: McpCardHandlers): HTMLElement {
-	const buttons: HTMLButtonElement[] = []
-
-	if (state.status === "connected") {
-		buttons.push(
-			iconButton("⟳", `Refresh tools for ${state.serverName}`, () => handlers.onRefresh(state.id)),
-		)
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-mcp-server-card": BhaiMcpServerCard
 	}
-	if (state.status === "error") {
-		buttons.push(
-			iconButton("🐛", `Error details for ${state.serverName}`, () =>
-				handlers.onShowError(state.id),
-			),
-			iconButton("↻", `Retry connecting to ${state.serverName}`, () => handlers.onRetry(state.id)),
-		)
-	}
-	buttons.push(iconButton("✕", `Remove ${state.serverName}`, () => handlers.onRemove(state.id)))
-
-	return el("div", { className: "mcp-actions", children: buttons })
-}
-
-/**
- * Render one server card.
- *
- * @param state - The server snapshot to render
- * @param handlers - Card-level actions
- * @param toolList - The tool disclosure to nest, or null when there is none.
- *   Injected rather than built here so the card stays free of List.js and of
- *   the tool list's teardown lifecycle.
- */
-export function renderServerCard(
-	state: McpServerState,
-	handlers: McpCardHandlers,
-	toolList: HTMLElement | null,
-): HTMLLIElement {
-	const name = el("span", {
-		className: "mcp-server-name",
-		text: state.serverName,
-		attrs: { title: state.config.url },
-	})
-
-	return el("li", {
-		className: "mcp-server",
-		// `status` doubles as the CSS state hook and a search/sort key; `tools`
-		// is indexed but never displayed, so typing a tool name finds the server
-		// exposing it.
-		data: {
-			status: state.status,
-			name: state.serverName,
-			tools: state.tools.map((tool) => tool.shortName).join(" "),
-		},
-		children: [
-			el("div", {
-				className: "mcp-server-head",
-				children: [
-					el("span", { className: "status-dot", data: { state: state.status } }),
-					name,
-					actions(state, handlers),
-				],
-			}),
-			el("div", { className: "mcp-server-status", text: statusText(state) }),
-			toolList,
-		],
-	})
 }

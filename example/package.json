@@ -10,11 +10,11 @@
 	},
 	"dependencies": {
 		"@lucasschirm/bhai": "workspace:*",
+		"@lucasschirm/litjs-typeahead": "^0.0.1",
 		"@mlc-ai/web-llm": "^0.2.79",
-		"list.js": "^2.3.1"
+		"lit": "^3.2.0"
 	},
 	"devDependencies": {
-		"@types/list.js": "^2.3.5",
 		"@webgpu/types": "^0.1.71",
 		"happy-dom": "^15.11.7",
 		"typescript": "5.7.2",

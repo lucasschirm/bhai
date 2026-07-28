@@ -1,7 +1,7 @@
 /** @file The one path that blocks all interaction. */
 
-import type { Composer } from "../components/composer.js"
-import type { TelemetryPanel } from "../components/telemetry-panel.js"
+import type { BhaiComposer } from "../components/composer.js"
+import type { BhaiTelemetry } from "../components/telemetry-panel.js"
 
 /**
  * Display an error that makes the demo unusable, and take the composer away so
@@ -11,11 +11,11 @@ import type { TelemetryPanel } from "../components/telemetry-panel.js"
  * neither the telemetry rail nor the composer should know the other exists.
  *
  * @param message - What went wrong, in the user's terms
- * @param ui - The two controllers this affects
+ * @param ui - The two custom elements this affects
  */
 export function showFatalError(
 	message: string,
-	ui: { telemetry: TelemetryPanel; composer: Composer },
+	ui: { telemetry: BhaiTelemetry; composer: BhaiComposer },
 ): void {
 	ui.telemetry.showMessage(message)
 	ui.composer.hide()

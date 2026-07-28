@@ -1,4 +1,7 @@
-/** @file The footer composer: textarea + Send/Stop button. */
+/** @file The footer composer as a reusable Lit element. */
+
+import { LitElement, html, nothing } from "lit"
+import { customElement, property, query } from "lit/decorators.js"
 
 /** Whether a turn is in flight. */
 export type ComposerState = "idle" | "generating"
@@ -11,74 +14,106 @@ export interface ComposerHandlers {
 	onStop(): void
 }
 
-/** Controller returned by {@link createComposer}. */
-export interface Composer {
-	/** Toggle between the idle (Send) and generating (Stop) presentations. */
-	setState(state: ComposerState): void
-	/** Empty the textarea. */
-	clear(): void
-	/** Hide the composer entirely — used when a fatal error blocks interaction. */
-	hide(): void
-	/** Attach the send/stop handlers. Called once, after the controllers exist. */
-	wire(handlers: ComposerHandlers): void
-}
-
 /**
- * Own the composer footer.
+ * Message-composer custom element.
  *
- * The Send button stays ENABLED during generation (relabelled "Stop") — an
- * earlier version disabled it, which made the cancel affordance unclickable.
- * Only the textarea is disabled mid-turn.
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
  *
- * @param root - The `<footer>` wrapping the composer
- * @param input - The message textarea
- * @param button - The Send/Stop button
+ * @fires bhai-send - Dispatched when the user submits a non-empty message. Detail: `{ text: string }`.
+ * @fires bhai-stop - Dispatched when the user presses Stop while generating.
  */
-export function createComposer(
-	root: HTMLElement,
-	input: HTMLTextAreaElement,
-	button: HTMLButtonElement,
-): Composer {
-	/** Read and trim the textarea, or null when there is nothing to send. */
-	function pendingText(): string | null {
-		const text = input.value.trim()
+@customElement("bhai-composer")
+export class BhaiComposer extends LitElement {
+	override createRenderRoot() {
+		return this
+	}
+
+	@property({ type: String })
+	placeholder = "Message the local model…"
+
+	@property({ type: String, reflect: true })
+	state: ComposerState = "idle"
+
+	@query("textarea")
+	private _input!: HTMLTextAreaElement
+
+	private _handlers: ComposerHandlers | null = null
+
+	/** Toggle between the idle (Send) and generating (Stop) presentations. */
+	setState(state: ComposerState): void {
+		this.state = state
+	}
+
+	/** Empty the textarea. */
+	clear(): void {
+		if (this._input) {
+			this._input.value = ""
+		}
+	}
+
+	/** Hide the composer entirely — used when a fatal error blocks interaction. */
+	hide(): void {
+		this.style.display = "none"
+	}
+
+	/** Attach the send/stop handlers. Called once, after the controllers exist. */
+	wire(handlers: ComposerHandlers): void {
+		this._handlers = handlers
+	}
+
+	override render() {
+		const generating = this.state === "generating"
+		const label = generating ? "Stop" : "Send"
+		return html`
+			<textarea
+				placeholder=${this.placeholder || nothing}
+				rows="2"
+				?disabled=${generating}
+				@keydown=${this._onKeyDown}
+			></textarea>
+			<button type="button" data-state=${generating ? "stop" : "send"} @click=${this._onClick}>
+				${label}
+			</button>
+		`
+	}
+
+	private _pendingText(): string | null {
+		const text = this._input?.value.trim() ?? ""
 		return text === "" ? null : text
 	}
 
-	return {
-		setState(state) {
-			const generating = state === "generating"
-			input.disabled = generating
-			button.disabled = false
-			button.dataset.state = generating ? "stop" : "send"
-			button.textContent = generating ? "Stop" : "Send"
-		},
+	private _onClick(): void {
+		if (this.state === "generating") {
+			this._handlers?.onStop()
+			this.dispatchEvent(new CustomEvent("bhai-stop", { bubbles: true, composed: true }))
+			return
+		}
+		const text = this._pendingText()
+		if (text) {
+			this._handlers?.onSend(text)
+			this.dispatchEvent(
+				new CustomEvent("bhai-send", { detail: { text }, bubbles: true, composed: true }),
+			)
+		}
+	}
 
-		clear() {
-			input.value = ""
-		},
+	private _onKeyDown(event: KeyboardEvent): void {
+		// Enter without Shift sends; Shift+Enter keeps its newline.
+		if (event.key !== "Enter" || event.shiftKey) return
+		event.preventDefault()
+		const text = this._pendingText()
+		if (text) {
+			this._handlers?.onSend(text)
+			this.dispatchEvent(
+				new CustomEvent("bhai-send", { detail: { text }, bubbles: true, composed: true }),
+			)
+		}
+	}
+}
 
-		hide() {
-			root.style.display = "none"
-		},
-
-		wire(handlers) {
-			button.addEventListener("click", () => {
-				if (button.dataset.state === "stop") {
-					handlers.onStop()
-					return
-				}
-				const text = pendingText()
-				if (text) handlers.onSend(text)
-			})
-
-			input.addEventListener("keydown", (event) => {
-				// Enter without Shift sends; Shift+Enter keeps its newline.
-				if (event.key !== "Enter" || event.shiftKey) return
-				event.preventDefault()
-				const text = pendingText()
-				if (text) handlers.onSend(text)
-			})
-		},
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-composer": BhaiComposer
 	}
 }

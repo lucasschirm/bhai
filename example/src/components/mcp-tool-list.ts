@@ -1,118 +1,108 @@
-/** @file One connected server's collapsible, filterable tool list. */
+/** @file One connected server's collapsible, filterable tool list as a Lit element. */
 
-import type { McpServerState } from "@lucasschirm/bhai/plugins/mcp"
-import { el } from "../lib/dom.js"
-import { type SearchableList, createSearchableList } from "../lib/searchable-list.js"
+import type { McpServerTool } from "@lucasschirm/bhai/plugins/mcp"
+import { LitElement, html } from "lit"
+import { customElement, property, state } from "lit/decorators.js"
 
-/**
- * Tool count above which a filter box appears. Below it the list fits on screen
- * and a search field is just another thing to look past.
- */
+/** Tool count above which a filter box appears. */
 const FILTER_THRESHOLD = 8
 
-/** `data-*` keys indexed for the tool filter. */
-const TOOL_INDEX_KEYS = ["tool", "description"]
-
-/** Options for {@link createToolList}. */
-export interface ToolListOptions {
-	/** Whether the disclosure starts open, restored by the parent across renders. */
-	expanded: boolean
-	/** Called when the user toggles the disclosure. */
-	onToggle(open: boolean): void
-}
-
-/** Controller returned by {@link createToolList}. */
-export interface ToolList {
-	/** The `<details>` element to place inside the server card. */
-	element: HTMLDetailsElement
-	/** Release the List.js adapter. Called before the node is discarded. */
-	destroy(): void
-}
-
 /**
- * Build one tool `<li>`.
+ * MCP tool-list custom element.
  *
- * Both `shortName` and `description` are server-supplied and therefore
- * untrusted: they reach the DOM through `textContent` and, for the search
- * index, `setAttribute` — never as parsed HTML.
- *
- * @param shortName - The bare remote tool name
- * @param description - The server-supplied description, possibly empty
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
  */
-function toolItem(shortName: string, description: string): HTMLLIElement {
-	return el("li", {
-		className: "mcp-tool",
-		data: { tool: shortName, description },
-		children: [
-			el("code", { text: shortName }),
-			description ? el("span", { className: "mcp-tool-description", text: description }) : null,
-		],
-	})
-}
-
-/**
- * Render a server's discovered tools as a collapsible list, with a filter once
- * the list is long enough to need one.
- *
- * @param state - The server whose tools to render
- * @param options - Expansion state and toggle callback
- */
-export function createToolList(state: McpServerState, options: ToolListOptions): ToolList {
-	const count = state.tools.length
-	const filterable = count > FILTER_THRESHOLD
-
-	const list = el("ul", {
-		// The `js-list` hook is only added when List.js is actually attached, so a
-		// short list stays a plain, untouched `<ul>`.
-		className: filterable ? "mcp-tool-list js-list" : "mcp-tool-list",
-		children: state.tools.map((tool) => toolItem(tool.shortName, tool.description)),
-	})
-
-	const noMatches = el("p", {
-		className: "mcp-empty mcp-tool-empty",
-		text: "No tools match that filter.",
-		attrs: { hidden: "" },
-	})
-
-	const search = filterable
-		? el("input", {
-				className: "js-search mcp-search",
-				attrs: {
-					type: "search",
-					placeholder: "filter tools…",
-					"aria-label": `Filter tools for ${state.serverName}`,
-				},
-			})
-		: null
-
-	const details = el("details", {
-		className: "mcp-tools",
-		children: [
-			el("summary", { text: count === 1 ? "1 tool" : `${count} tools` }),
-			search,
-			list,
-			filterable ? noMatches : null,
-		],
-	})
-	details.open = options.expanded
-	details.addEventListener("toggle", () => options.onToggle(details.open))
-
-	let searchable: SearchableList | null = null
-	if (filterable) {
-		searchable = createSearchableList({
-			root: details,
-			keys: TOOL_INDEX_KEYS,
-			onUpdate: (matching, total) => {
-				noMatches.hidden = matching > 0 || total === 0
-			},
-		})
-		searchable.sync()
+@customElement("bhai-mcp-tool-list")
+export class BhaiMcpToolList extends LitElement {
+	override createRenderRoot() {
+		return this
 	}
 
-	return {
-		element: details,
-		destroy() {
-			searchable?.destroy()
-		},
+	@property({ type: String })
+	serverName = ""
+
+	@property({ type: Array })
+	tools: McpServerTool[] = []
+
+	@state()
+	private _expanded = false
+
+	@state()
+	private _query = ""
+
+	override render() {
+		const count = this.tools.length
+		const filterable = count > FILTER_THRESHOLD
+		const needle = this._query.trim().toLowerCase()
+		const visible = filterable
+			? this.tools.filter(
+					(tool) =>
+						tool.shortName.toLowerCase().includes(needle) ||
+						tool.description.toLowerCase().includes(needle),
+				)
+			: this.tools
+
+		return html`
+			<div>
+				<details
+					class="mcp-tools"
+					?open=${this._expanded}
+					@toggle=${this._onToggle}
+				>
+					<summary>${count === 1 ? "1 tool" : `${count} tools`}</summary>
+					${
+						filterable
+							? html`
+								<input
+									class="mcp-search"
+									type="search"
+									placeholder="filter tools…"
+									.value=${this._query}
+									@input=${this._onSearch}
+									aria-label=${`Filter tools for ${this.serverName}`}
+								/>
+						  `
+							: null
+					}
+					<ul class="mcp-tool-list">
+						${visible.map(
+							(tool) => html`
+								<li class="mcp-tool">
+									<code>${tool.shortName}</code>
+									${
+										tool.description
+											? html`<span class="mcp-tool-description">${tool.description}</span>`
+											: null
+									}
+								</li>
+							`,
+						)}
+					</ul>
+					${
+						filterable
+							? html`<p class="mcp-empty mcp-tool-empty" ?hidden=${visible.length > 0}>
+								No tools match that filter.
+						  </p>`
+							: null
+					}
+				</details>
+			</div>
+		`
+	}
+
+	private _onToggle(event: Event): void {
+		const details = event.target as HTMLDetailsElement
+		this._expanded = details.open
+	}
+
+	private _onSearch(event: Event): void {
+		this._query = (event.target as HTMLInputElement).value
+	}
+}
+
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-mcp-tool-list": BhaiMcpToolList
 	}
 }

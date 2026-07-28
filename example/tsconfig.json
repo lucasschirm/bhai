@@ -13,6 +13,11 @@
 		// the WebGPU guard in `app/webllm-engine.ts` does not typecheck without it.
 		"types": ["vite/client", "@webgpu/types"],
 		"noEmit": true,
+		// Lit decorators are used in the example UI. The BHAI core sticks with
+		// native TC39 decorators, but the browser example follows Lit's recommended
+		// TypeScript experimental-decorator mode.
+		"experimentalDecorators": true,
+		"useDefineForClassFields": false,
 		// Inherited from the root config, where they exist for tsup's `dts` build.
 		// Nothing is emitted here, so turn them off rather than leave them dangling.
 		"declaration": false,

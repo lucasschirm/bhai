@@ -1,12 +1,32 @@
-/** @file The conversation stream: user bubbles, assistant turns, inline errors. */
+/** @file The conversation stream as a reusable Lit element. */
 
-import { el } from "../lib/dom.js"
+import { LitElement, html } from "lit"
+import { customElement, state } from "lit/decorators.js"
+
+interface UserMessage {
+	kind: "user"
+	text: string
+}
+
+interface AssistantMessage {
+	kind: "assistant"
+	thought: string
+	answer: string
+	hasThought: boolean
+}
+
+interface ErrorMessage {
+	kind: "error"
+	text: string
+}
+
+type Message = UserMessage | AssistantMessage | ErrorMessage
 
 /**
  * A handle on one in-flight assistant message.
  *
- * Replaces the old string-id handle: the caller holds the object and the
- * methods close over the message's own nodes, so nothing has to look the
+ * Mirrors the old imperative controller: the caller holds the object and the
+ * methods close over the message's own state, so nothing has to look the
  * element back up by id on every delta.
  */
 export interface AssistantTurn {
@@ -16,106 +36,117 @@ export interface AssistantTurn {
 	appendAnswer(delta: string): void
 }
 
-/** Controller returned by {@link createConversationView}. */
-export interface ConversationView {
-	/** Add a user message bubble. */
-	appendUserMessage(text: string): void
-	/** Start a new assistant message and return a handle for streaming into it. */
-	beginAssistantTurn(): AssistantTurn
-	/** Show a non-fatal, per-turn error inline, leaving the composer usable. */
-	showTurnError(message: string): void
-	/** Remove the intro placeholder once the first turn begins. */
-	clearEmptyState(): void
-}
-
 /**
- * Own the conversation column.
+ * Conversation-view custom element.
  *
- * NOT backed by List.js, deliberately: List.js re-parents every visible item on
- * each update, which on a token-by-token stream would thrash the DOM and fight
- * the `scrollTop` auto-scroll below.
- *
- * @param root - The scrolling conversation container
- * @param emptyState - The intro placeholder to remove on first use
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance. Deltas are streamed through the imperative
+ * handles returned by {@link BhaiConversation.beginAssistantTurn}.
  */
-export function createConversationView(
-	root: HTMLElement,
-	emptyState: HTMLElement | null,
-): ConversationView {
-	/** Keep the newest content in view after every append. */
-	function scrollToBottom(): void {
-		root.scrollTop = root.scrollHeight
+@customElement("bhai-conversation")
+export class BhaiConversation extends LitElement {
+	override createRenderRoot() {
+		return this
 	}
 
-	return {
-		appendUserMessage(text) {
-			root.appendChild(
-				el("div", {
-					className: "message user",
-					children: [el("div", { className: "message-answer", text })],
-				}),
-			)
-			scrollToBottom()
-		},
+	@state()
+	private _messages: Message[] = []
 
-		beginAssistantTurn() {
-			const message = el("div", {
-				className: "message assistant",
-				children: [el("div", { className: "message-content" })],
-			})
-			root.appendChild(message)
-			scrollToBottom()
+	private _emptyRemoved = false
 
-			// Both regions are created on first use rather than up front, so a turn
-			// with no reasoning never renders an empty Thought disclosure.
-			let thought: HTMLElement | null = null
-			let answer: HTMLElement | null = null
+	/** Add a user message bubble. */
+	appendUserMessage(text: string): void {
+		this.clearEmptyState()
+		this._messages = [...this._messages, { kind: "user", text }]
+	}
 
-			return {
-				appendThought(delta) {
-					if (!thought) {
-						const content = el("div", { className: "message-thought-content" })
-						const details = el("details", {
-							className: "message-thought",
-							children: [
-								el("summary", { text: "Thought" }),
-								content,
-								el("div", { className: "message-divider" }),
-							],
-						})
-						// Collapsed by default; the user can toggle it open.
-						details.open = false
-						message.insertAdjacentElement("afterbegin", details)
-						thought = content
-					}
-					thought.textContent += delta
-					scrollToBottom()
-				},
+	/** Start a new assistant message and return a handle for streaming into it. */
+	beginAssistantTurn(): AssistantTurn {
+		this.clearEmptyState()
+		const message: AssistantMessage = {
+			kind: "assistant",
+			thought: "",
+			answer: "",
+			hasThought: false,
+		}
+		this._messages = [...this._messages, message]
 
-				appendAnswer(delta) {
-					if (!answer) {
-						answer = el("div", { className: "message-answer" })
-						message.appendChild(answer)
-					}
-					answer.textContent += delta
-					scrollToBottom()
-				},
-			}
-		},
+		const self = this
+		return {
+			appendThought(delta) {
+				message.thought += delta
+				message.hasThought = true
+				self.requestUpdate()
+			},
+			appendAnswer(delta) {
+				message.answer += delta
+				self.requestUpdate()
+			},
+		}
+	}
 
-		showTurnError(message) {
-			root.appendChild(
-				el("div", {
-					className: "message error",
-					text: message,
-					attrs: { role: "alert" },
-				}),
-			)
-			scrollToBottom()
-		},
+	/** Show a non-fatal, per-turn error inline, leaving the composer usable. */
+	showTurnError(text: string): void {
+		this._messages = [...this._messages, { kind: "error", text }]
+	}
 
-		clearEmptyState() {
-			emptyState?.remove()
-		},
+	/** Remove the intro placeholder once the first turn begins. */
+	clearEmptyState(): void {
+		this._emptyRemoved = true
+		this.requestUpdate()
+	}
+
+	override updated() {
+		// Keep the newest content in view after every append.
+		this.scrollTop = this.scrollHeight
+	}
+
+	override render() {
+		return html`
+			<div>
+				${
+					this._emptyRemoved
+						? null
+						: html`<div class="empty-state">No model loaded. Pick a model and send a message to warm it up.</div>`
+				}
+				${this._messages.map((message) => this._renderMessage(message))}
+			</div>
+		`
+	}
+
+	private _renderMessage(message: Message) {
+		switch (message.kind) {
+			case "user":
+				return html`
+					<div class="message user">
+						<div class="message-answer">${message.text}</div>
+					</div>
+				`
+			case "error":
+				return html`<div class="message error" role="alert">${message.text}</div>`
+			case "assistant":
+				return html`
+					<div class="message assistant">
+						${
+							message.hasThought
+								? html`
+									<details class="message-thought" ?open=${false}>
+										<summary>Thought</summary>
+										<div class="message-thought-content">${message.thought}</div>
+										<div class="message-divider"></div>
+									</details>
+							  `
+								: null
+						}
+						<div class="message-answer">${message.answer}</div>
+					</div>
+				`
+		}
+	}
+}
+
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-conversation": BhaiConversation
 	}
 }

@@ -11,22 +11,6 @@
  * drive the thermal color system and live telemetry gauges.
  */
 
-:root {
-	--graphite-900: #0c0e13;
-	--graphite-800: #141821;
-	--graphite-700: #1e2430;
-	--line: #2a3140;
-	--text: #e7ecf3;
-	--muted: #7c899b;
-	--cold: #38bdf8;
-	--mid: #a78bfa;
-	--warm: #fb7185;
-	--ok: #34d399;
-	--font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-	--font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-	--font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-
 *,
 *::before,
 *::after {
@@ -646,9 +630,8 @@ details[open] > summary::before {
 }
 
 /*
- * Both empty states are siblings of the List.js-managed <ul>, never items
- * inside it: List.js clears every child of `.js-list` on each update, so an
- * empty state placed within would be wiped on the first render.
+ * Both empty states are siblings of the rendered list, never items inside it,
+ * so a re-render never accidentally removes them.
  */
 .mcp-empty {
 	margin: 0;
@@ -731,9 +714,9 @@ details[open] > summary::before {
 }
 
 /*
- * `asc` / `desc` are stamped on the button by List.js itself, so the caret is
- * driven by the library's own state rather than a duplicate we would have to
- * keep in step.
+ * `asc` / `desc` are stamped on the button by the Lit component based on its
+ * current sort state, so the caret is driven by the component rather than a
+ * separate library.
  */
 .mcp-sort.asc,
 .mcp-sort.desc {
