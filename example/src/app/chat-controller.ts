@@ -1,0 +1,277 @@
+/**
+ * @file Chat orchestration: conversation lifecycle, streaming, and telemetry.
+ *
+ * Owns no DOM. Everything visible happens through the component controllers
+ * passed in, and everything model-related through the kernel and the engine.
+ */
+
+import type { BHAI, BHAIConversation } from "@lucasschirm/bhai"
+import type { WebLLM } from "@lucasschirm/bhai/plugins/webllm"
+import type * as webllm from "@mlc-ai/web-llm"
+
+import type { ColdStartPanel } from "../components/cold-start-panel.js"
+import type { Composer } from "../components/composer.js"
+import type { ConversationView } from "../components/conversation-view.js"
+import type { ModelSelect } from "../components/model-select.js"
+import type { StatusIndicator } from "../components/status-indicator.js"
+import type { TelemetryPanel } from "../components/telemetry-panel.js"
+import { formatSeconds, formatTokens, formatTps } from "../lib/format.js"
+import { parseRuntimeStats } from "../lib/stats.js"
+import { thermalColor, thermalRatio } from "../lib/thermal.js"
+
+/** One streamed chunk, as carried by the conversation's `message.delta` event. */
+interface MessageDelta {
+	/** The text of this chunk. */
+	delta: string
+	/** Which channel it belongs to — `"reasoning"` or `"text"` under `parseThink`. */
+	kind: string
+}
+
+/**
+ * Narrow a `message.delta` payload.
+ *
+ * `ConversationEvents` carries an index signature (`[key: string]: unknown`) so
+ * plugins can define their own events, which means every payload arrives here
+ * as `unknown`. Narrowing at this one boundary keeps the rest of the controller
+ * honestly typed instead of casting at each use.
+ *
+ * @param payload - The raw event payload
+ * @returns The delta, or null when the payload is not one
+ */
+function asMessageDelta(payload: unknown): MessageDelta | null {
+	if (typeof payload !== "object" || payload === null) return null
+	const { delta, kind } = payload as Partial<MessageDelta>
+	if (typeof delta !== "string" || typeof kind !== "string") return null
+	return { delta, kind }
+}
+
+/** Everything the chat controller drives. */
+export interface ChatControllerDeps {
+	/** The kernel, already initialized. */
+	bh: BHAI
+	/** The host-owned MLC engine, for `runtimeStatsText()`. */
+	engine: webllm.MLCEngine
+	/** The registered WebLLM driver, for `capabilities()`. */
+	driver: WebLLM
+	/** UI controllers. */
+	ui: {
+		status: StatusIndicator
+		composer: Composer
+		conversation: ConversationView
+		telemetry: TelemetryPanel
+		coldStart: ColdStartPanel
+		modelSelect: ModelSelect
+	}
+}
+
+/** Controller returned by {@link createChatController}. */
+export interface ChatController {
+	/** Create a fresh conversation for the given bare MLC model id. */
+	selectModel(modelId: string): Promise<void>
+	/** Send a user message and stream the reply. */
+	send(text: string): Promise<void>
+	/** Abort the in-flight turn, if any. */
+	stop(): void
+}
+
+/**
+ * Wire the kernel, the engine, and the chat UI together.
+ *
+ * @param deps - Kernel, engine, driver, and the component controllers
+ */
+export function createChatController(deps: ChatControllerDeps): ChatController {
+	const { bh, engine, driver, ui } = deps
+
+	let conversation: BHAIConversation | null = null
+	/** Whether the selected model's weights have been downloaded this session. */
+	let modelLoaded = false
+	/** The turn currently streaming, or null between turns. */
+	let turn: ReturnType<ConversationView["beginAssistantTurn"]> | null = null
+	/** `performance.now()` at send time, for TTFT. */
+	let sendStartTime = 0
+	/** `performance.now()` at the first delta of the current turn. */
+	let firstTokenTime: number | null = null
+	/**
+	 * Set only by {@link ChatController.stop}, so the catch block can tell a
+	 * deliberate stop from a real failure — instead of the fragile, over-broad
+	 * approach of matching "aborted" in an error message, which silently
+	 * swallows genuine engine errors.
+	 */
+	let userAborted = false
+
+	/** Route streamed deltas into the active turn's two regions. */
+	function wireConversationEvents(): void {
+		conversation?.on("message.delta", (payload) => {
+			const event = asMessageDelta(payload)
+			if (!turn || !event) return
+			const { delta, kind } = event
+
+			// Measured outside the `kind` branch on purpose: a turn that opens with
+			// reasoning would otherwise not be timed until its first answer token.
+			if (firstTokenTime === null) {
+				firstTokenTime = performance.now()
+			}
+
+			// The conversation is created with `parseThink: true`, so the framework
+			// has already split the stream — each channel goes to its own region.
+			if (kind === "reasoning") turn.appendThought(delta)
+			else if (kind === "text") turn.appendAnswer(delta)
+		})
+	}
+
+	/**
+	 * Rebuild the conversation from its own snapshot, yielding a fresh, idle
+	 * instance that preserves the full message history.
+	 *
+	 * A conversation owns a single-use `AbortController`: once `abort()` is
+	 * called its status sticks at `"aborted"` and its signal stays tripped, so
+	 * every later `sendMessage` silently yields nothing. `loadConversation()`
+	 * builds a NEW instance with a fresh controller and `idle` status, which
+	 * un-poisons it while keeping the history intact.
+	 */
+	async function refreshConversation(): Promise<void> {
+		if (!conversation) return
+		try {
+			conversation = await bh.loadConversation(conversation.toJSON())
+			wireConversationEvents()
+		} catch (error) {
+			console.error("Failed to refresh conversation:", error)
+		}
+	}
+
+	/** Read the engine's stats for the turn just finished and render them. */
+	async function updateTelemetry(): Promise<void> {
+		if (!conversation) return
+
+		const { prefillTps, decodeTps } = parseRuntimeStats(await engine.runtimeStatsText())
+		const decodeRatio = thermalRatio(decodeTps ?? 0)
+
+		const { inputTokens = 0, outputTokens = 0 } = conversation.usage
+		const selectedModelId = ui.modelSelect.selectedId()
+		const contextWindow = selectedModelId
+			? driver.capabilities(selectedModelId).contextWindow
+			: undefined
+		const ttftMs = firstTokenTime === null ? null : firstTokenTime - sendStartTime
+
+		ui.telemetry.update({
+			prefillTps: formatTps(prefillTps),
+			decodeTps: formatTps(decodeTps),
+			ttft: ttftMs === null ? "—" : formatSeconds(ttftMs / 1000),
+			inputTokens: formatTokens(inputTokens),
+			outputTokens: formatTokens(outputTokens),
+			contextWindow,
+			contextUsagePercent: contextWindow ? Math.round((outputTokens / contextWindow) * 100) : null,
+			decodeColor: thermalColor(decodeRatio),
+			decodeRatio,
+		})
+	}
+
+	return {
+		async selectModel(modelId) {
+			if (!modelId) return
+
+			try {
+				ui.composer.setState("idle")
+				modelLoaded = false
+				ui.status.set("cold", "cold")
+				ui.coldStart.hide()
+
+				// A fresh conversation per model selection, rather than swapping the
+				// model mid-conversation: the simplest correct behavior.
+				//
+				// `parseThink: true` makes the framework split `<think>...</think>` out
+				// of the model's text stream — reasoning arrives as `message.delta`
+				// with `kind: "reasoning"`, the answer as `kind: "text"`. WebLLM has no
+				// native reasoning channel, so without this the example would have to
+				// parse the tags itself.
+				conversation = await bh.createConversation({
+					model: `webllm/${modelId}`,
+					parseThink: true,
+				})
+				wireConversationEvents()
+			} catch (error) {
+				console.error("Failed to create conversation:", error)
+				ui.conversation.showTurnError("Failed to load model — try again.")
+			}
+		},
+
+		async send(text) {
+			if (!conversation) return
+
+			// Recover if a previous turn left the conversation non-idle. Without
+			// this, every later send would silently produce nothing.
+			if (conversation.status !== "idle") {
+				await refreshConversation()
+			}
+
+			userAborted = false
+			ui.conversation.clearEmptyState()
+			ui.conversation.appendUserMessage(text)
+
+			// Clear and disable the input, but leave the button enabled as "Stop" so
+			// the user can actually cancel.
+			ui.composer.clear()
+			ui.composer.setState("generating")
+
+			turn = ui.conversation.beginAssistantTurn()
+			sendStartTime = performance.now()
+			firstTokenTime = null
+
+			try {
+				if (!modelLoaded) {
+					ui.status.set("warming", "warming")
+				}
+
+				// If the model is not yet loaded, the driver's lazy `ensureModelLoaded`
+				// triggers `engine.reload(...)`, which fires the `initProgressCallback`
+				// registered at engine creation — that is where cold-start progress
+				// comes from.
+				await conversation.sendMessage(text)
+
+				if (!modelLoaded) {
+					modelLoaded = true
+					ui.coldStart.hide()
+					ui.status.set("ready", "ready")
+				}
+
+				try {
+					await updateTelemetry()
+				} catch (statsError) {
+					console.warn("Failed to extract runtime stats:", statsError)
+				}
+			} catch (error) {
+				if (userAborted) {
+					console.log("Generation stopped by user.")
+				} else {
+					// Surface the real error instead of swallowing it. A non-fatal
+					// inline message keeps the composer usable so the user can retry.
+					console.error("Message send failed:", error)
+					const detail = error instanceof Error ? error.message : String(error)
+					ui.conversation.showTurnError(`Failed to generate a response: ${detail}`)
+				}
+			} finally {
+				turn = null
+				ui.composer.setState("idle")
+
+				// A stopped or otherwise non-idle conversation is poisoned; reload it
+				// from its snapshot so the next send works.
+				if (userAborted || conversation.status !== "idle") {
+					await refreshConversation()
+				}
+
+				if (modelLoaded) {
+					ui.status.set("ready", "ready")
+				}
+			}
+		},
+
+		stop() {
+			userAborted = true
+			try {
+				conversation?.abort("user stopped")
+			} catch (error) {
+				console.error("Abort failed:", error)
+			}
+		},
+	}
+}

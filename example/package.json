@@ -5,13 +5,19 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
-		"preview": "vite"
+		"preview": "vite",
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@lucasschirm/bhai": "workspace:*",
-		"@mlc-ai/web-llm": "^0.2.79"
+		"@mlc-ai/web-llm": "^0.2.79",
+		"list.js": "^2.3.1"
 	},
 	"devDependencies": {
+		"@types/list.js": "^2.3.5",
+		"@webgpu/types": "^0.1.71",
+		"happy-dom": "^15.11.7",
+		"typescript": "5.7.2",
 		"vite": "^5.4.0"
 	}
 }

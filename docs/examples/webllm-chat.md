@@ -52,46 +52,73 @@ Navigate to `http://localhost:5173`.
 
 ### Architecture
 
-```
-main.js (orchestration)
-├─ Loads BHAI kernel
-├─ Registers WebLLM driver
-├─ Registers the MCP plugin + holds its McpManager
-├─ Wires conversation lifecycle
-├─ Sends messages & measures TTFT
-├─ Extracts stats via engine.runtimeStatsText()
-└─ Calls ui.js render functions
+The example is TypeScript, with one module per responsibility: `app/` owns kernel
+and engine calls but never touches the DOM, `components/` owns the DOM but knows
+nothing about BHAI, and `main.ts` is the only file that knows the `index.html`
+element ids.
 
-ui.js (DOM helpers)
-├─ populateModelSelect()
-├─ setStatus(), showColdStartPanel()
-├─ beginAssistantTurn(), appendThoughtDelta(), appendAnswerDelta()
-├─ updateTelemetry()
-├─ renderMcpServers(), showMcpError(), MCP form helpers
-└─ All direct DOM querying & mutation
-
-Lib modules (pure functions, testable)
-├─ stats.js — extract tok/s from engine.runtimeStatsText()
-├─ thermal.js — map decode tok/s to colors
-├─ format.js — pretty-print numbers for display
-└─ mcp-store.js — persist servers, parse headers, interpret errors
 ```
+main.ts (bootstrap)
+├─ Resolves every element by id
+├─ Builds the component controllers
+└─ Hands them to the two orchestrators
+
+app/ (orchestration — no DOM)
+├─ webllm-engine.ts — WebGPU guard, model allowlist, MLCEngine creation
+├─ chat-controller.ts — conversation lifecycle, send/abort, TTFT, stats pipeline
+├─ mcp-controller.ts — McpManager subscription, add-server form, persistence
+└─ fatal-error.ts — the one path spanning telemetry + composer
+
+components/ (DOM — one module per region, each a createX() factory)
+├─ status-indicator.ts, model-select.ts, composer.ts
+├─ conversation-view.ts — user bubbles, assistant turns, streaming deltas
+├─ cold-start-panel.ts, telemetry-panel.ts
+└─ mcp-server-list.ts, mcp-server-card.ts, mcp-tool-list.ts,
+   mcp-add-form.ts, mcp-error-dialog.ts
+
+lib/ (pure functions, testable)
+├─ searchable-list.ts — the only List.js integration point
+├─ dom.ts — el(), byId(), iconButton()
+├─ stats.ts — extract tok/s from engine.runtimeStatsText()
+├─ thermal.ts — map decode tok/s to colors
+├─ format.ts — pretty-print numbers for display
+└─ mcp-store.ts — persist servers, parse headers, interpret errors
+```
+
+### Searchable MCP lists (List.js)
+
+The MCP panel's server list and each connected server's tool list are backed by
+[List.js](https://listjs.com), which adds a filter box and name/status sorting.
+It is used in its "works on existing HTML" mode: the components render the item
+nodes themselves and List.js only indexes them, via `data-*` attributes.
+
+That is a security requirement, not a style preference. List.js's normal data
+path assigns values with `elm.innerHTML = value`, and MCP tool names,
+descriptions and error messages come from whatever endpoint the user pasted a
+URL for. `list.add()` is therefore never called, and every List.js detail is
+confined to `src/lib/searchable-list.ts`. See `example/AGENTS.md` for the full
+contract and the library traps the adapter absorbs.
+
+The conversation stream is deliberately *not* a List.js list: it re-appends
+every visible node on each update, which would fight the streaming auto-scroll.
 
 ### Thought splitting (`parseThink`)
 
 WebLLM's driver only emits `kind: "text"` deltas (no structured reasoning channel), and reasoning models such as Qwen3 inline their thinking as `<think>...</think>` in the response text. The conversation is therefore created with `parseThink: true`:
 
-```js
+```ts
 conversation = await bh.createConversation({
-  model: `webllm/${selectedId}`,
+  model: `webllm/${modelId}`,
   parseThink: true,
 })
 ```
 
 The framework then splits the stream as it arrives — statefully, so tags may straddle chunk boundaries — and the example only has to route each channel:
 
-1. **`kind: "reasoning"`** → `ui.appendThoughtDelta()`, a collapsible `<details>` region created on the first delta.
-2. **`kind: "text"`** → `ui.appendAnswerDelta()`, the main message body, which never contains `<think>` markup.
+1. **`kind: "reasoning"`** → `turn.appendThought()`, a collapsible `<details>` region created on the first delta.
+2. **`kind: "text"`** → `turn.appendAnswer()`, the main message body, which never contains `<think>` markup.
+
+`turn` is the handle `conversationView.beginAssistantTurn()` returns; its methods close over that message's own nodes, so streaming never has to look the element back up.
 
 The full reasoning text is also available on the finished message as `message.think` (backed by `meta.think`, so it survives a snapshot round-trip).
 
@@ -140,14 +167,9 @@ The default model is the first Qwen3 in the available list (or the first availab
 
 When the user sends their first message, `engine.reload()` is called lazily (by the WebLLM driver), triggering downloads of model weights. The example displays a download progress panel:
 
-```javascript
-engine = new webllm.MLCEngine({
-  initProgressCallback: (report) => {
-    // report.progress: 0..1
-    // report.text: shard/status string (e.g., "Downloading shard 3/10…")
-    ui.showColdStartPanel(report.progress, report.text)
-  },
-})
+```ts
+// app/webllm-engine.ts wraps this; main.ts supplies the callback.
+const engine = createEngine((progress, text) => ui.coldStart.show(progress, text))
 ```
 
 The progress bar fill and color interpolate from cold cyan → warm coral. Once download completes, the status dot turns green (ready).
@@ -294,24 +316,35 @@ On mobile (<861px), it stacks into a single column.
 
 ### No framework, plain DOM
 
-The example deliberately avoids frameworks (React, Vue, etc.) to demonstrate BHAI as a lightweight orchestration library. It uses vanilla JavaScript and the DOM directly.
+The example deliberately avoids frameworks (React, Vue, etc.) to demonstrate BHAI as a lightweight orchestration library. It uses TypeScript and the DOM directly, with a plain factory-function component pattern: each module exports a `createX(...)` that returns a controller object and keeps its state in a closure.
+
+### Never `innerHTML`
+
+Every node in the example is built with `createElement` + `textContent`. The MCP renderers are the security-critical case — tool names, tool descriptions and error messages are untrusted remote text — but the rule holds everywhere so there is no exception to remember. `example/src/components/mcp-server-card.test.ts` guards it with an injected `<img src=x onerror=…>` payload.
 
 ### Workspace-linked package
 
 The example imports `@lucasschirm/bhai` via the workspace (`workspace:*` dependency in `package.json`), ensuring it uses the BUILT `dist/` output (run `pnpm run build` first). It never imports from source (`../../src/*.ts`), which exercises the published subpath exports.
 
-### Pure lib + browser wiring
+### Testing
 
-The `src/lib/` functions (stats parsing, formatting) are pure and testable in Node (no browser globals). They run via `pnpm test` with vitest. The browser wiring (`src/main.js`, `src/ui.js`) is thin glue around BHAI and the libs — it's not unit-tested, only smoke-tested by `pnpm run preview`.
+The `src/lib/` functions (stats parsing, formatting, MCP persistence) are pure and testable in Node with no browser globals. The List.js adapter and the three components with real logic — the server card, the server list, and the conversation view — are tested against a DOM, with `// @vitest-environment happy-dom` at the top of each file so the root `vitest.config.ts` stays `node` by default. All of it runs via `pnpm test`.
+
+`main.ts` and `app/*` are thin glue around BHAI APIs and the tested libs; they are covered by the smoke run (`pnpm run preview`).
+
+### Typechecking
+
+`example/` is its own TypeScript project (`example/tsconfig.json`), because it needs the DOM lib that the kernel deliberately does not, and because resolving `@lucasschirm/bhai` through the workspace link requires `pnpm run build` to have produced `dist/` first. The root `pnpm typecheck` runs both projects.
 
 ### Build output
 
-Vite bundles `src/main.js`, `src/ui.js`, and the libs into a single JavaScript file that references the workspace-linked `@lucasschirm/bhai` by its published subpath names (`@lucasschirm/bhai/plugins/webllm`, etc.). The `dist/index.html` is served as-is.
+Vite bundles `src/main.ts` and everything it imports into a single JavaScript file that references the workspace-linked `@lucasschirm/bhai` by its published subpath names (`@lucasschirm/bhai/plugins/webllm`, etc.). The `dist/index.html` is served as-is.
 
 ## Further reading
 
 - **`example/AGENTS.md`** — Implementation notes for developers working on this example.
 - **`example/package.json`** — Dependencies and build scripts.
-- **`example/vite.config.js`** — Vite configuration (note: `@mlc-ai/web-llm` is excluded from pre-bundling).
+- **`example/vite.config.ts`** — Vite configuration (note: `@mlc-ai/web-llm` is excluded from pre-bundling).
+- **`example/src/lib/searchable-list.ts`** — The List.js adapter, and the reasoning behind how it is used.
 - **BHAI core docs**: `docs/core/kernel.md`, `docs/core/conversation.md` — Detailed BHAI API and concepts.
 - **WebLLM docs**: https://github.com/mlc-ai/web-llm — Model selection, custom parameters, advanced features.

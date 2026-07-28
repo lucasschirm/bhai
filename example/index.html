@@ -40,15 +40,46 @@
     <aside class="telemetry" id="telemetry">
       <!--
         The stats region is re-rendered wholesale after every turn, so anything
-        that must survive a turn (the MCP panel below) lives outside it.
+        that must survive a turn (the cold-start panel, the MCP panel below)
+        lives outside it in its own host.
       -->
+      <div id="cold-start-host"></div>
+
       <div id="telemetry-stats">
-        <!-- cold-start panel + decode/prefill/ttft/tokens/context readouts -->
+        <!-- decode/prefill/ttft/tokens/context readouts -->
       </div>
 
       <section class="telemetry-panel mcp-panel" id="mcp-panel" aria-labelledby="mcp-panel-title">
         <div class="telemetry-eyebrow" id="mcp-panel-title">MCP servers</div>
-        <ul class="mcp-list" id="mcp-server-list" aria-live="polite"></ul>
+
+        <!--
+          List.js contract (see src/lib/searchable-list.ts):
+          #mcp-servers is the CONTAINER — it must hold, but not be, the
+          `.js-list` element. `.js-search` and `.js-sort` are bound once at
+          construction, so they have to be present in the markup. List.js
+          clears every child of `.js-list` on update, which is why both empty
+          states are siblings of the <ul> rather than items inside it.
+        -->
+        <div id="mcp-servers" class="mcp-servers">
+          <div class="mcp-list-controls" id="mcp-list-controls" hidden>
+            <input
+              class="js-search mcp-search"
+              type="search"
+              placeholder="filter servers…"
+              aria-label="Filter MCP servers"
+              aria-controls="mcp-server-list"
+            />
+            <div class="mcp-sort-group">
+              <button type="button" class="js-sort mcp-sort" data-sort="name">name</button>
+              <button type="button" class="js-sort mcp-sort" data-sort="status">status</button>
+            </div>
+          </div>
+
+          <ul class="mcp-list js-list" id="mcp-server-list" aria-live="polite"></ul>
+
+          <p class="mcp-empty" id="mcp-empty">No servers attached.</p>
+          <p class="mcp-empty" id="mcp-no-matches" hidden>No servers match that filter.</p>
+        </div>
 
         <details class="mcp-add" id="mcp-add">
           <summary>Add HTTP server</summary>
@@ -124,7 +155,7 @@
     </details>
   </dialog>
 
-  <footer class="composer">
+  <footer class="composer" id="composer">
     <textarea
       id="composer-input"
       placeholder="Message the local model…"
@@ -133,6 +164,6 @@
     <button id="composer-send">Send</button>
   </footer>
 
-  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
