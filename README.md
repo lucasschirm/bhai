@@ -1,5 +1,7 @@
 # `@lucasschirm/bhai`
 
+[View online demo](https://lucasschirm.github.io/bhai/)
+
 > Browser-Hosted Agentic AI Framework — a standalone, environment-agnostic TypeScript framework that extracts agent-harness internals (provider gateway, tool-calling loop, conversation persistence, streaming, memory, MCP client) into a plugin-first micro-kernel designed for extension and reuse.
 
 BHAI is a micro-kernel plus a plugin interface for model drivers, tools, commands, message middleware, and storage. Its extension surface is deliberately aligned with pi, OpenCode, VS Code LM tools, MCP, and the Vercel AI SDK so existing extensions can be adapted rather than rewritten.
