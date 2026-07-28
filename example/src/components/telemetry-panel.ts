@@ -1,6 +1,7 @@
-/** @file The per-turn telemetry readouts in the right-hand rail. */
+/** @file The per-turn telemetry readouts as a reusable Lit element. */
 
-import { el } from "../lib/dom.js"
+import { LitElement, html, nothing } from "lit"
+import { customElement, state } from "lit/decorators.js"
 import { formatTokens } from "../lib/format.js"
 
 /** Everything the panel renders, pre-formatted by the caller. */
@@ -25,93 +26,96 @@ export interface TelemetryStats {
 	decodeRatio: number
 }
 
-/** Controller returned by {@link createTelemetryPanel}. */
-export interface TelemetryPanel {
+/**
+ * Telemetry panel custom element.
+ *
+ * Replaces its previous content with a fresh set of readouts on every turn.
+ * Rendered in the light DOM so the host page's global styles (and CSS variables)
+ * continue to drive its appearance.
+ */
+@customElement("bhai-telemetry")
+export class BhaiTelemetry extends LitElement {
+	override createRenderRoot() {
+		return this
+	}
+
+	@state()
+	private _stats: TelemetryStats | null = null
+
+	@state()
+	private _message: string | null = null
+
 	/** Replace the readouts with a fresh set of stats. */
-	update(stats: TelemetryStats): void
+	updateStats(stats: TelemetryStats): void {
+		this._stats = stats
+		this._message = null
+	}
+
 	/** Replace the readouts with a single message — used for fatal errors. */
-	showMessage(message: string): void
+	showMessage(message: string): void {
+		this._message = message
+		this._stats = null
+	}
+
+	override render() {
+		if (this._message !== null) {
+			return html`<div class="telemetry-message">${this._message}</div>`
+		}
+		if (this._stats === null) return nothing
+		const stats = this._stats
+
+		const contextPanel =
+			stats.contextWindow && stats.contextUsagePercent !== null
+				? html`
+						<div class="telemetry-panel">
+							<div class="telemetry-eyebrow">Context</div>
+							<div class="context-bar">${this._contextBar(stats.contextUsagePercent)}</div>
+							<div class="telemetry-subtext telemetry-subtext-small">
+								max: ${formatTokens(stats.contextWindow)} tokens
+							</div>
+						</div>
+				  `
+				: nothing
+
+		return html`
+			<div class="telemetry-panel">
+				<div class="telemetry-eyebrow">Decode</div>
+				<div class="telemetry-value">${stats.decodeTps || "—"}</div>
+				<div class="gauge-container">
+					<div class="gauge-bar">
+						<div
+							class="gauge-fill"
+							style="width: ${stats.decodeRatio * 100}%; background: ${stats.decodeColor}"
+						></div>
+					</div>
+				</div>
+			</div>
+			<div class="telemetry-panel">
+				<div class="telemetry-eyebrow">Prefill</div>
+				<div class="telemetry-value">${stats.prefillTps || "—"}</div>
+			</div>
+			<div class="telemetry-panel">
+				<div class="telemetry-eyebrow">TTFT</div>
+				<div class="telemetry-value">${stats.ttft || "—"}</div>
+			</div>
+			<div class="telemetry-panel">
+				<div class="telemetry-eyebrow">Tokens</div>
+				<div class="telemetry-subtext">in: ${stats.inputTokens}</div>
+				<div class="telemetry-subtext">out: ${stats.outputTokens}</div>
+			</div>
+			${contextPanel}
+		`
+	}
+
+	private _contextBar(percent: number): string {
+		const filled = Math.max(0, Math.min(10, Math.round(percent / 10)))
+		const bar = "▓".repeat(filled) + "░".repeat(10 - filled)
+		return `${bar} ${percent}%`
+	}
 }
 
-/**
- * Build one labelled readout panel.
- *
- * @param eyebrow - The small uppercase label
- * @param children - The panel's body
- */
-function panel(eyebrow: string, children: (Node | null)[]): HTMLElement {
-	return el("div", {
-		className: "telemetry-panel",
-		children: [el("div", { className: "telemetry-eyebrow", text: eyebrow }), ...children],
-	})
-}
-
-/**
- * Own the stats region of the telemetry rail.
- *
- * Builds every node with `createElement`. The values here are locally computed
- * numbers rather than server text, so this is not a security boundary the way
- * the MCP renderers are — but the old template-string `innerHTML` was the last
- * place in the example that parsed HTML at runtime, and dropping it means the
- * rule "we never assign innerHTML" holds without exceptions to remember.
- *
- * @param root - The region this panel replaces the contents of
- */
-export function createTelemetryPanel(root: HTMLElement): TelemetryPanel {
-	return {
-		update(stats) {
-			const panels: HTMLElement[] = [
-				panel("Decode", [
-					el("div", { className: "telemetry-value", text: stats.decodeTps || "—" }),
-					el("div", {
-						className: "gauge-container",
-						children: [
-							el("div", {
-								className: "gauge-bar",
-								children: [
-									el("div", {
-										className: "gauge-fill",
-										style: {
-											width: `${stats.decodeRatio * 100}%`,
-											background: stats.decodeColor,
-										},
-									}),
-								],
-							}),
-						],
-					}),
-				]),
-				panel("Prefill", [
-					el("div", { className: "telemetry-value", text: stats.prefillTps || "—" }),
-				]),
-				panel("TTFT", [el("div", { className: "telemetry-value", text: stats.ttft || "—" })]),
-				panel("Tokens", [
-					el("div", { className: "telemetry-subtext", text: `in: ${stats.inputTokens}` }),
-					el("div", { className: "telemetry-subtext", text: `out: ${stats.outputTokens}` }),
-				]),
-			]
-
-			// Context usage is omitted rather than faked when the driver does not
-			// report a window for the selected model.
-			if (stats.contextWindow && stats.contextUsagePercent !== null) {
-				const filled = Math.max(0, Math.min(10, Math.round(stats.contextUsagePercent / 10)))
-				const bar = "▓".repeat(filled) + "░".repeat(10 - filled)
-				panels.push(
-					panel("Context", [
-						el("div", { className: "context-bar", text: `${bar} ${stats.contextUsagePercent}%` }),
-						el("div", {
-							className: "telemetry-subtext telemetry-subtext-small",
-							text: `max: ${formatTokens(stats.contextWindow)} tokens`,
-						}),
-					]),
-				)
-			}
-
-			root.replaceChildren(...panels)
-		},
-
-		showMessage(message) {
-			root.replaceChildren(el("div", { className: "telemetry-message", text: message }))
-		},
+declare global {
+	interface HTMLElementTagNameMap {
+		"bhai-telemetry": BhaiTelemetry
 	}
 }

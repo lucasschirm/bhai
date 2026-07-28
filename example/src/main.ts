@@ -2,9 +2,9 @@
  * @file bhai WebLLM example · bootstrap.
  *
  * The only file that knows the `index.html` id contract. It resolves every
- * element, builds the component controllers, hands them to the two
- * orchestrators, and gets out of the way. All DOM manipulation lives in
- * `components/`, all kernel and engine work in `app/`.
+ * element, wires the custom elements to the two orchestrators, and gets out of
+ * the way. All DOM manipulation lives in `components/`, all kernel and engine
+ * work in `app/`.
  *
  * Imports `@lucasschirm/bhai` by its published subpath names — never
  * `../../src/*.ts` — so the example exercises the real package boundary.
@@ -13,48 +13,48 @@
 import { BHAI } from "@lucasschirm/bhai"
 import { createMcpPlugin } from "@lucasschirm/bhai/plugins/mcp"
 import { type MLCEngineInstance, WebLLM } from "@lucasschirm/bhai/plugins/webllm"
+import "@lucasschirm/litjs-typeahead"
+import type { LitTypeahead } from "@lucasschirm/litjs-typeahead"
 
 import { createChatController } from "./app/chat-controller.js"
 import { showFatalError } from "./app/fatal-error.js"
 import { createMcpController } from "./app/mcp-controller.js"
 import { createEngine, hasWebGpu, resolveModels } from "./app/webllm-engine.js"
-import { createColdStartPanel } from "./components/cold-start-panel.js"
-import { createComposer } from "./components/composer.js"
-import { createConversationView } from "./components/conversation-view.js"
-import { createMcpAddForm } from "./components/mcp-add-form.js"
-import { createMcpErrorDialog } from "./components/mcp-error-dialog.js"
-import { createMcpServerList } from "./components/mcp-server-list.js"
-import { createModelSelect } from "./components/model-select.js"
-import { createStatusIndicator } from "./components/status-indicator.js"
-import { createTelemetryPanel } from "./components/telemetry-panel.js"
+// Importing the component modules registers their custom elements.
+import "./components/cold-start-panel.js"
+import "./components/composer.js"
+import "./components/conversation-view.js"
+import "./components/mcp-add-form.js"
+import "./components/mcp-error-dialog.js"
+import "./components/mcp-server-list.js"
+import "./components/status-indicator.js"
+import "./components/telemetry-panel.js"
 import { byId } from "./lib/dom.js"
 
-/** Build every component controller from the markup in `index.html`. */
+/** Resolve every custom element from the markup in `index.html`. */
 function buildUi() {
 	return {
-		status: createStatusIndicator(byId("status-dot"), byId("status-label")),
-		modelSelect: createModelSelect(byId<HTMLSelectElement>("model-select")),
-		composer: createComposer(
-			byId("composer"),
-			byId<HTMLTextAreaElement>("composer-input"),
-			byId<HTMLButtonElement>("composer-send"),
-		),
-		conversation: createConversationView(
-			byId("conversation"),
-			document.getElementById("empty-state"),
-		),
-		telemetry: createTelemetryPanel(byId("telemetry-stats")),
-		coldStart: createColdStartPanel(byId("cold-start-host")),
-		mcpForm: createMcpAddForm(
-			byId<HTMLDetailsElement>("mcp-add"),
-			byId<HTMLFormElement>("mcp-add-form"),
-		),
-		mcpDialog: createMcpErrorDialog(
-			byId<HTMLDialogElement>("mcp-error-dialog"),
-			byId<HTMLButtonElement>("mcp-error-close"),
-		),
+		status: byId<BhaiStatusIndicator>("status"),
+		modelSelect: byId<LitTypeahead>("model-select"),
+		composer: byId<BhaiComposer>("composer"),
+		conversation: byId<BhaiConversation>("conversation"),
+		telemetry: byId<BhaiTelemetry>("telemetry-stats"),
+		coldStart: byId<BhaiColdStart>("cold-start"),
+		mcpForm: byId<BhaiMcpAddForm>("mcp-add"),
+		mcpDialog: byId<BhaiMcpErrorDialog>("mcp-error-dialog"),
+		mcpServerList: byId<BhaiMcpServerList>("mcp-servers"),
 	}
 }
+
+// The imports above only register classes; type-only imports keep the file honest.
+import type { BhaiColdStart } from "./components/cold-start-panel.js"
+import type { BhaiComposer } from "./components/composer.js"
+import type { BhaiConversation } from "./components/conversation-view.js"
+import type { BhaiMcpAddForm } from "./components/mcp-add-form.js"
+import type { BhaiMcpErrorDialog } from "./components/mcp-error-dialog.js"
+import type { BhaiMcpServerList } from "./components/mcp-server-list.js"
+import type { BhaiStatusIndicator } from "./components/status-indicator.js"
+import type { BhaiTelemetry } from "./components/telemetry-panel.js"
 
 /** Set up the engine, the kernel, and both orchestrators. */
 async function initialize(): Promise<void> {
@@ -75,7 +75,8 @@ async function initialize(): Promise<void> {
 			showFatalError("No models available in @mlc-ai/web-llm — check your installation.", ui)
 			return
 		}
-		ui.modelSelect.populate(modelIds, defaultModelId)
+		ui.modelSelect.items = modelIds
+		ui.modelSelect.value = defaultModelId
 
 		const engine = createEngine((progress, text) => ui.coldStart.show(progress, text))
 
@@ -106,11 +107,14 @@ async function initialize(): Promise<void> {
 			onSend: (text) => void chat.send(text),
 			onStop: () => chat.stop(),
 		})
-		ui.modelSelect.onChange((modelId) => void chat.selectModel(modelId))
+		ui.modelSelect.addEventListener("change", (event) => {
+			const value = (event as CustomEvent<{ value: string }>).detail?.value
+			if (value) void chat.selectModel(value)
+		})
 
 		const mcpController = createMcpController({
 			manager: mcp.manager,
-			createList: (handlers) => createMcpServerList(byId("mcp-servers"), handlers),
+			serverList: ui.mcpServerList,
 			form: ui.mcpForm,
 			dialog: ui.mcpDialog,
 		})
@@ -119,7 +123,7 @@ async function initialize(): Promise<void> {
 		// chat UI, and every outcome lands in the panel either way.
 		void mcpController.start()
 
-		// The `<select>` shows `defaultModelId` on load, but a programmatic default
+		// The typeahead shows `defaultModelId` on load, but a programmatic default
 		// never fires a `change` event — so bootstrap that conversation here, and
 		// the very first message works without touching the picker.
 		await chat.selectModel(defaultModelId)

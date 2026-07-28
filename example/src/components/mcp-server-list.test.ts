@@ -2,33 +2,10 @@
 
 import type { McpServerState, McpServerTool } from "@lucasschirm/bhai/plugins/mcp"
 import { beforeEach, describe, expect, it } from "vitest"
-import type { McpCardHandlers } from "./mcp-server-card.js"
-import { createMcpServerList } from "./mcp-server-list.js"
-
-/** Handlers that do nothing — this suite is about rendering, not actions. */
-const NOOP_HANDLERS: McpCardHandlers = {
-	onRefresh: () => {},
-	onRetry: () => {},
-	onRemove: () => {},
-	onShowError: () => {},
-}
-
-/** Recreate the `#mcp-servers` region from `index.html`. */
-function fixture(): HTMLElement {
-	document.body.innerHTML = `
-		<div id="mcp-servers">
-			<div class="mcp-list-controls" id="mcp-list-controls" hidden>
-				<input class="js-search" type="search" />
-				<button type="button" class="js-sort" data-sort="name">name</button>
-				<button type="button" class="js-sort" data-sort="status">status</button>
-			</div>
-			<ul class="mcp-list js-list" id="mcp-server-list"></ul>
-			<p class="mcp-empty" id="mcp-empty">No servers attached.</p>
-			<p class="mcp-empty" id="mcp-no-matches" hidden>No servers match that filter.</p>
-		</div>
-	`
-	return document.getElementById("mcp-servers") as HTMLElement
-}
+import "./mcp-server-card.js"
+import "./mcp-server-list.js"
+import type { BhaiMcpServerCard } from "./mcp-server-card.js"
+import type { BhaiMcpServerList } from "./mcp-server-list.js"
 
 /** Build a server snapshot with sane defaults. */
 function serverState(
@@ -56,135 +33,199 @@ function tools(n: number): McpServerTool[] {
 	}))
 }
 
-describe("createMcpServerList", () => {
+/** Wait for every child server card to finish its update cycle. */
+async function awaitCards(list: BhaiMcpServerList): Promise<void> {
+	await Promise.all(
+		Array.from(list.querySelectorAll("bhai-mcp-server-card")).map(
+			(card) => (card as BhaiMcpServerCard).updateComplete,
+		),
+	)
+}
+
+/** Build a server-list fixture and wait for its first render. */
+async function fixture(): Promise<BhaiMcpServerList> {
+	document.body.innerHTML = ""
+	const list = document.createElement("bhai-mcp-server-list") as BhaiMcpServerList
+	document.body.appendChild(list)
+	await list.updateComplete
+	await awaitCards(list)
+	return list
+}
+
+describe("BhaiMcpServerList", () => {
 	beforeEach(() => {
 		document.body.innerHTML = ""
 	})
 
-	it("shows the empty state and hides the controls when nothing is attached", () => {
-		const root = fixture()
-		createMcpServerList(root, NOOP_HANDLERS).render([])
+	it("shows the empty state and hides the controls when nothing is attached", async () => {
+		const list = await fixture()
+		list.states = []
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect((document.getElementById("mcp-empty") as HTMLElement).hidden).toBe(false)
-		expect((document.getElementById("mcp-list-controls") as HTMLElement).hidden).toBe(true)
-		expect((document.getElementById("mcp-no-matches") as HTMLElement).hidden).toBe(true)
+		expect((list.querySelector(".mcp-empty") as HTMLElement).hidden).toBe(false)
+		expect((list.querySelector(".mcp-list-controls") as HTMLElement).hidden).toBe(true)
 	})
 
-	it("renders a card per server and reveals the controls", () => {
-		const root = fixture()
-		createMcpServerList(root, NOOP_HANDLERS).render([
-			serverState("a", "alpha"),
-			serverState("b", "beta", "error"),
-		])
+	it("renders a card per server and reveals the controls", async () => {
+		const list = await fixture()
+		list.states = [serverState("a", "alpha"), serverState("b", "beta", "error")]
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect(root.querySelectorAll(".mcp-server")).toHaveLength(2)
-		expect((document.getElementById("mcp-empty") as HTMLElement).hidden).toBe(true)
-		expect((document.getElementById("mcp-list-controls") as HTMLElement).hidden).toBe(false)
+		expect(list.querySelectorAll(".mcp-server")).toHaveLength(2)
+		expect((list.querySelector(".mcp-empty") as HTMLElement).hidden).toBe(true)
+		expect((list.querySelector(".mcp-list-controls") as HTMLElement).hidden).toBe(false)
 	})
 
-	it("keeps the empty states outside the List.js-managed <ul>", () => {
-		// List.js clears every child of `.js-list` on each update, so an empty
-		// state placed inside it would vanish on the first render.
-		const root = fixture()
-		const list = createMcpServerList(root, NOOP_HANDLERS)
+	it("keeps the empty states outside the rendered list", async () => {
+		const list = await fixture()
 
-		list.render([serverState("a", "alpha")])
-		list.render([])
+		list.states = [serverState("a", "alpha")]
+		await list.updateComplete
+		await awaitCards(list)
+		list.states = []
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect(document.getElementById("mcp-empty")).not.toBeNull()
-		expect(document.getElementById("mcp-no-matches")).not.toBeNull()
+		expect(list.querySelector(".mcp-empty")).not.toBeNull()
 	})
 
-	it("shows the no-matches state when a filter excludes everything", () => {
-		const root = fixture()
-		createMcpServerList(root, NOOP_HANDLERS).render([
-			serverState("a", "alpha"),
-			serverState("b", "beta"),
-		])
+	it("shows the no-matches state when a filter excludes everything", async () => {
+		const list = await fixture()
+		list.states = [serverState("a", "alpha"), serverState("b", "beta")]
+		await list.updateComplete
+		await awaitCards(list)
 
-		const search = root.querySelector(".js-search") as HTMLInputElement
+		const search = list.querySelector(".mcp-search") as HTMLInputElement
 		search.value = "nothing-matches-this"
-		search.dispatchEvent(new Event("keyup"))
+		search.dispatchEvent(new Event("input"))
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect((document.getElementById("mcp-no-matches") as HTMLElement).hidden).toBe(false)
-		// "No servers attached" would be a lie — two are attached, both filtered out.
-		expect((document.getElementById("mcp-empty") as HTMLElement).hidden).toBe(true)
+		const noMatches = Array.from(list.querySelectorAll(".mcp-empty")).find(
+			(el) => el.textContent?.trim() === "No servers match that filter.",
+		) as HTMLElement
+		expect(noMatches.hidden).toBe(false)
+
+		const empty = Array.from(list.querySelectorAll(".mcp-empty")).find(
+			(el) => el.textContent?.trim() === "No servers attached.",
+		) as HTMLElement
+		expect(empty.hidden).toBe(true)
 
 		search.value = ""
-		search.dispatchEvent(new Event("keyup"))
-		expect((document.getElementById("mcp-no-matches") as HTMLElement).hidden).toBe(true)
+		search.dispatchEvent(new Event("input"))
+		await list.updateComplete
+		await awaitCards(list)
+		expect(noMatches.hidden).toBe(true)
 	})
 
-	it("filters servers by name and by the tools they expose", () => {
-		const root = fixture()
-		createMcpServerList(root, NOOP_HANDLERS).render([
+	it("filters servers by name and by the tools they expose", async () => {
+		const list = await fixture()
+		list.states = [
 			serverState("a", "alpha", "connected", [
 				{ name: "mcp__alpha__search_issues", shortName: "search_issues", description: "" },
 			]),
 			serverState("b", "beta"),
-		])
+		]
+		await list.updateComplete
+		await awaitCards(list)
 
-		const search = root.querySelector(".js-search") as HTMLInputElement
+		const search = list.querySelector(".mcp-search") as HTMLInputElement
 		const names = () =>
-			Array.from(root.querySelectorAll<HTMLElement>(".mcp-server")).map((c) => c.dataset.name)
+			Array.from(list.querySelectorAll<HTMLElement>(".mcp-server")).map((c) => c.dataset.name)
 
 		search.value = "beta"
-		search.dispatchEvent(new Event("keyup"))
+		search.dispatchEvent(new Event("input"))
+		await list.updateComplete
+		await awaitCards(list)
 		expect(names()).toEqual(["beta"])
 
 		// A tool name finds the server exposing it, even though it is not visible
 		// on the collapsed card.
 		search.value = "search_issues"
-		search.dispatchEvent(new Event("keyup"))
+		search.dispatchEvent(new Event("input"))
+		await list.updateComplete
+		await awaitCards(list)
 		expect(names()).toEqual(["alpha"])
 	})
 
-	it("keeps an expanded tool disclosure open across an unrelated re-render", () => {
+	it("sorts servers by name and toggles direction", async () => {
+		const list = await fixture()
+		list.states = [serverState("b", "bravo"), serverState("a", "alpha")]
+		await list.updateComplete
+		await awaitCards(list)
+
+		const nameSort = list.querySelector('[data-sort="name"]') as HTMLButtonElement
+		nameSort.click()
+		await list.updateComplete
+		await awaitCards(list)
+		expect(
+			Array.from(list.querySelectorAll<HTMLElement>(".mcp-server")).map((c) => c.dataset.name),
+		).toEqual(["alpha", "bravo"])
+
+		nameSort.click()
+		await list.updateComplete
+		await awaitCards(list)
+		expect(
+			Array.from(list.querySelectorAll<HTMLElement>(".mcp-server")).map((c) => c.dataset.name),
+		).toEqual(["bravo", "alpha"])
+	})
+
+	it("keeps an expanded tool disclosure open across an unrelated re-render", async () => {
 		// Every manager transition re-renders the whole list. Without carrying the
 		// expansion state, one server connecting would snap another's tools shut.
-		const root = fixture()
-		const list = createMcpServerList(root, NOOP_HANDLERS)
+		const list = await fixture()
+		list.states = [serverState("a", "alpha", "connected", tools(9))]
+		await list.updateComplete
+		await awaitCards(list)
 
-		list.render([serverState("a", "alpha", "connected", tools(3))])
-		const details = root.querySelector("details.mcp-tools") as HTMLDetailsElement
+		const details = list.querySelector("details.mcp-tools") as HTMLDetailsElement
 		details.open = true
 		details.dispatchEvent(new Event("toggle"))
 
-		list.render([
-			serverState("a", "alpha", "connected", tools(3)),
+		list.states = [
+			serverState("a", "alpha", "connected", tools(9)),
 			serverState("b", "beta", "connecting"),
-		])
+		]
+		await list.updateComplete
+		await awaitCards(list)
 
-		const reRendered = root.querySelector("details.mcp-tools") as HTMLDetailsElement
+		const reRendered = list.querySelector("details.mcp-tools") as HTMLDetailsElement
 		expect(reRendered.open).toBe(true)
 	})
 
-	it("forgets expansion state for a server that goes away", () => {
-		const root = fixture()
-		const list = createMcpServerList(root, NOOP_HANDLERS)
+	it("forgets expansion state for a server that goes away", async () => {
+		const list = await fixture()
+		list.states = [serverState("a", "alpha", "connected", tools(9))]
+		await list.updateComplete
+		await awaitCards(list)
 
-		list.render([serverState("a", "alpha", "connected", tools(3))])
-		const details = root.querySelector("details.mcp-tools") as HTMLDetailsElement
+		const details = list.querySelector("details.mcp-tools") as HTMLDetailsElement
 		details.open = true
 		details.dispatchEvent(new Event("toggle"))
 
 		// Removed, then re-added under the same id: a fresh attach should start
 		// collapsed rather than inheriting a stale expansion.
-		list.render([])
-		list.render([serverState("a", "alpha", "connected", tools(3))])
+		list.states = []
+		await list.updateComplete
+		await awaitCards(list)
+		list.states = [serverState("a", "alpha", "connected", tools(9))]
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect((root.querySelector("details.mcp-tools") as HTMLDetailsElement).open).toBe(false)
+		expect((list.querySelector("details.mcp-tools") as HTMLDetailsElement).open).toBe(false)
 	})
 
-	it("only renders a tool list for a connected server that has tools", () => {
-		const root = fixture()
-		const list = createMcpServerList(root, NOOP_HANDLERS)
-
-		list.render([
+	it("only renders a tool list for a connected server that has tools", async () => {
+		const list = await fixture()
+		list.states = [
 			serverState("a", "alpha", "connected", []),
-			serverState("b", "beta", "error", tools(3)),
-		])
+			serverState("b", "beta", "error", tools(9)),
+		]
+		await list.updateComplete
+		await awaitCards(list)
 
-		expect(root.querySelectorAll("details.mcp-tools")).toHaveLength(0)
+		expect(list.querySelectorAll("details.mcp-tools")).toHaveLength(0)
 	})
 })

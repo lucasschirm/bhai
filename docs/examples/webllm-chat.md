@@ -1,6 +1,9 @@
 # WebLLM Chat Example
 
-A vanilla JavaScript browser example demonstrating BHAI's core capabilities: streaming responses, in-browser model execution via WebLLM, live telemetry (decode/prefill tokens per second, time-to-first-token, context usage), and client-side parsing of reasoning blocks.
+A Lit 3 + TypeScript browser example demonstrating BHAI's core capabilities:
+streaming responses, in-browser model execution via WebLLM, live telemetry
+(decode/prefill tokens per second, time-to-first-token, context usage), and
+client-side parsing of reasoning blocks.
 
 ## What it is
 
@@ -59,8 +62,8 @@ element ids.
 
 ```
 main.ts (bootstrap)
+├─ Side-effect imports every component module (registers custom elements)
 ├─ Resolves every element by id
-├─ Builds the component controllers
 └─ Hands them to the two orchestrators
 
 app/ (orchestration — no DOM)
@@ -69,15 +72,16 @@ app/ (orchestration — no DOM)
 ├─ mcp-controller.ts — McpManager subscription, add-server form, persistence
 └─ fatal-error.ts — the one path spanning telemetry + composer
 
-components/ (DOM — one module per region, each a createX() factory)
-├─ status-indicator.ts, model-select.ts, composer.ts
-├─ conversation-view.ts — user bubbles, assistant turns, streaming deltas
-├─ cold-start-panel.ts, telemetry-panel.ts
+components/ (DOM — one Lit custom element per region)
+├─ status-indicator.ts → <bhai-status-indicator>
+├─ composer.ts → <bhai-composer>
+├─ conversation-view.ts → <bhai-conversation> (user/assistant bubbles, streaming)
+├─ cold-start-panel.ts → <bhai-cold-start>
+├─ telemetry-panel.ts → <bhai-telemetry>
 └─ mcp-server-list.ts, mcp-server-card.ts, mcp-tool-list.ts,
-   mcp-add-form.ts, mcp-error-dialog.ts
+   mcp-add-form.ts, mcp-error-dialog.ts → <bhai-mcp-*>
 
 lib/ (pure functions, testable)
-├─ searchable-list.ts — the only List.js integration point
 ├─ dom.ts — el(), byId(), iconButton()
 ├─ stats.ts — extract tok/s from engine.runtimeStatsText()
 ├─ thermal.ts — map decode tok/s to colors
@@ -85,22 +89,23 @@ lib/ (pure functions, testable)
 └─ mcp-store.ts — persist servers, parse headers, interpret errors
 ```
 
-### Searchable MCP lists (List.js)
+### Searchable MCP lists
 
-The MCP panel's server list and each connected server's tool list are backed by
-[List.js](https://listjs.com), which adds a filter box and name/status sorting.
-It is used in its "works on existing HTML" mode: the components render the item
-nodes themselves and List.js only indexes them, via `data-*` attributes.
+The MCP panel's server list and each connected server's tool list have a filter
+box and sort buttons. Filtering and sorting are implemented reactively inside
+Lit, driven by `@state` properties, so the DOM always stays under Lit's
+control. This avoids external DOM mutation that can conflict with Lit's virtual
+DOM, while still preserving per-card state such as an expanded tool disclosure
+across unrelated re-renders (`repeat(..., keyFn, ...)` keeps the same element
+instances).
 
-That is a security requirement, not a style preference. List.js's normal data
-path assigns values with `elm.innerHTML = value`, and MCP tool names,
-descriptions and error messages come from whatever endpoint the user pasted a
-URL for. `list.add()` is therefore never called, and every List.js detail is
-confined to `src/lib/searchable-list.ts`. See `example/AGENTS.md` for the full
-contract and the library traps the adapter absorbs.
+The components render every item node themselves, so MCP tool names, descriptions
+and error messages are bound as escaped text by Lit. See
+`example/AGENTS.md` for the full component contract.
 
-The conversation stream is deliberately *not* a List.js list: it re-appends
-every visible node on each update, which would fight the streaming auto-scroll.
+The conversation stream is deliberately *not* a searchable list: it appends
+streaming tokens incrementally, which would be incompatible with a filterable
+list that re-renders on every keystroke.
 
 ### Thought splitting (`parseThink`)
 
@@ -145,23 +150,19 @@ All numbers are formatted for readability (`formatTps`, `formatTokens`, etc.).
 
 ### Model selection
 
-The example maintains a curated allowlist of models (Qwen3, Llama, Phi variants) and intersects it at runtime against `webllm.prebuiltAppConfig.model_list` to handle different versions of the installed `@mlc-ai/web-llm` package:
+The model picker is a `<lit-typeahead>` custom element from
+`@lucasschirm/litjs-typeahead`. `main.ts` populates it with every model that the
+installed `@mlc-ai/web-llm` package advertises in
+`webllm.prebuiltAppConfig.model_list`:
 
 ```javascript
-const ALLOWLIST = [
-  "Qwen3-0.6B-q4f16_1-MLC",
-  "Qwen3-1.7B-q4f16_1-MLC",
-  "Llama-3.2-1B-Instruct-q4f16_1-MLC",
-  "Llama-3.2-3B-Instruct-q4f16_1-MLC",
-  "Phi-3.5-mini-instruct-q4f16_1-MLC",
-]
-
-const available = ALLOWLIST.filter((id) =>
-  webllm.prebuiltAppConfig.model_list.some((m) => m.model_id === id),
-)
+const modelIds = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
 ```
 
-The default model is the first Qwen3 in the available list (or the first available model if no Qwen3 is found). Each model selection creates a fresh conversation (simplest correct behavior).
+The default selection prefers a Qwen3 model because it emits reasoning blocks,
+which the demo's Thought panel is built to surface; otherwise it falls back to
+the first available model. Selecting a model creates a fresh conversation
+(simplest correct behavior).
 
 ### Cold-start feedback
 
@@ -215,6 +216,14 @@ Two constraints worth knowing:
 Servers persist to `localStorage` and reconnect on load. ⚠️ That includes any
 headers you entered, stored in plaintext under this origin — convenient for a
 local demo, not a pattern to copy into production.
+
+## CSS variables
+
+All colors, typefaces, and key spacing tokens live in `variables.css` and are
+imported in `index.html` before `styles.css`. Every component template reuses the
+same structural classes it always did (`.message`, `.telemetry-panel`,
+`.mcp-server`, etc.), so the global stylesheet controls the look while the
+custom elements control the structure and behavior.
 
 ## Design: "Cold start → running hot"
 
@@ -314,37 +323,66 @@ On mobile (<861px), it stacks into a single column.
 
 ## Development notes
 
-### No framework, plain DOM
+### Lit 3 + TypeScript components
 
-The example deliberately avoids frameworks (React, Vue, etc.) to demonstrate BHAI as a lightweight orchestration library. It uses TypeScript and the DOM directly, with a plain factory-function component pattern: each module exports a `createX(...)` that returns a controller object and keeps its state in a closure.
+The example uses Lit 3 custom elements for its UI. Each component is a
+`LitElement` subclass decorated with `@customElement`, `@property`, `@state`, and
+`@query`. They are deliberately rendered in the **light DOM**
+(`createRenderRoot() { return this }`) so the host page's global CSS variables and
+selectors keep working. This is a deliberate trade-off — style encapsulation is
+sacrificed for a simple migration path from the prior vanilla-JS components and
+for the CSS-variable requirement.
 
 ### Never `innerHTML`
 
-Every node in the example is built with `createElement` + `textContent`. The MCP renderers are the security-critical case — tool names, tool descriptions and error messages are untrusted remote text — but the rule holds everywhere so there is no exception to remember. `example/src/components/mcp-server-card.test.ts` guards it with an injected `<img src=x onerror=…>` payload.
+Every node in the example is built with Lit `html` bindings or `createElement` +
+`textContent`. Lit escapes text bindings automatically, so MCP tool names, tool
+descriptions, and error messages are safe by default. The security-critical
+regression is guarded by
+`example/src/components/mcp-server-card.test.ts`, which injects an
+`<img src=x onerror=…>` payload.
 
 ### Workspace-linked package
 
-The example imports `@lucasschirm/bhai` via the workspace (`workspace:*` dependency in `package.json`), ensuring it uses the BUILT `dist/` output (run `pnpm run build` first). It never imports from source (`../../src/*.ts`), which exercises the published subpath exports.
+The example imports `@lucasschirm/bhai` via the workspace (`workspace:*`
+dependency in `package.json`), ensuring it uses the BUILT `dist/` output (run
+`pnpm run build` first). It never imports from source (`../../src/*.ts`), which
+exercises the published subpath exports.
 
 ### Testing
 
-The `src/lib/` functions (stats parsing, formatting, MCP persistence) are pure and testable in Node with no browser globals. The List.js adapter and the three components with real logic — the server card, the server list, and the conversation view — are tested against a DOM, with `// @vitest-environment happy-dom` at the top of each file so the root `vitest.config.ts` stays `node` by default. All of it runs via `pnpm test`.
+The `src/lib/` functions (stats parsing, formatting, MCP persistence) are pure
+and testable in Node with no browser globals. The three components with real
+logic — the server card, the server list, and the conversation view — are tested
+against a DOM, with `// @vitest-environment happy-dom` at the top of each file so
+the root `vitest.config.ts` stays `node` by default. All of it runs via `pnpm test`.
 
-`main.ts` and `app/*` are thin glue around BHAI APIs and the tested libs; they are covered by the smoke run (`pnpm run preview`).
+Because custom element updates are async, the DOM tests `await` the host's
+`updateComplete` and, for the server list, the `updateComplete` of child
+`<bhai-mcp-server-card>` elements as well.
+
+`main.ts` and `app/*` are thin glue around BHAI APIs and the tested libs; they are
+covered by the smoke run (`pnpm run preview`).
 
 ### Typechecking
 
-`example/` is its own TypeScript project (`example/tsconfig.json`), because it needs the DOM lib that the kernel deliberately does not, and because resolving `@lucasschirm/bhai` through the workspace link requires `pnpm run build` to have produced `dist/` first. The root `pnpm typecheck` runs both projects.
+`example/` is its own TypeScript project (`example/tsconfig.json`), because it
+needs the DOM lib, `experimentalDecorators: true`, and `useDefineForClassFields:
+false` for Lit, which the kernel deliberately does not, and because resolving
+`@lucasschirm/bhai` through the workspace link requires `pnpm run build` to have
+produced `dist/` first. The root `pnpm typecheck` runs both projects.
 
 ### Build output
 
-Vite bundles `src/main.ts` and everything it imports into a single JavaScript file that references the workspace-linked `@lucasschirm/bhai` by its published subpath names (`@lucasschirm/bhai/plugins/webllm`, etc.). The `dist/index.html` is served as-is.
+Vite bundles `src/main.ts` and everything it imports into a single JavaScript
+file that references the workspace-linked `@lucasschirm/bhai` by its published
+subpath names (`@lucasschirm/bhai/plugins/webllm`, etc.). The `dist/index.html`
+is served as-is.
 
 ## Further reading
 
 - **`example/AGENTS.md`** — Implementation notes for developers working on this example.
 - **`example/package.json`** — Dependencies and build scripts.
 - **`example/vite.config.ts`** — Vite configuration (note: `@mlc-ai/web-llm` is excluded from pre-bundling).
-- **`example/src/lib/searchable-list.ts`** — The List.js adapter, and the reasoning behind how it is used.
 - **BHAI core docs**: `docs/core/kernel.md`, `docs/core/conversation.md` — Detailed BHAI API and concepts.
 - **WebLLM docs**: https://github.com/mlc-ai/web-llm — Model selection, custom parameters, advanced features.

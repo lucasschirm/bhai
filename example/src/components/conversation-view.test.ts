@@ -1,114 +1,110 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it } from "vitest"
-import { createConversationView } from "./conversation-view.js"
+import "./conversation-view.js"
+import type { BhaiConversation } from "./conversation-view.js"
 
-/** Build the conversation column with its intro placeholder. */
-function fixture(): { root: HTMLElement; emptyState: HTMLElement } {
-	document.body.innerHTML = `
-		<section id="conversation">
-			<div class="empty-state" id="empty-state">No model loaded.</div>
-		</section>
-	`
-	return {
-		root: document.getElementById("conversation") as HTMLElement,
-		emptyState: document.getElementById("empty-state") as HTMLElement,
-	}
+/** Build the conversation custom element. */
+function fixture(): BhaiConversation {
+	document.body.innerHTML = ""
+	const el = document.createElement("bhai-conversation") as BhaiConversation
+	document.body.appendChild(el)
+	return el
 }
 
-describe("createConversationView", () => {
+describe("BhaiConversation", () => {
 	beforeEach(() => {
 		document.body.innerHTML = ""
 	})
 
-	it("renders a user message as text, not markup", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
-
+	it("renders a user message as text, not markup", async () => {
+		const view = fixture()
 		view.appendUserMessage("<b>hello</b>")
-
-		const bubble = root.querySelector(".message.user .message-answer") as HTMLElement
+		await view.updateComplete
+		const bubble = view.querySelector(".message.user .message-answer") as HTMLElement
 		expect(bubble.textContent).toBe("<b>hello</b>")
 		expect(bubble.querySelector("b")).toBeNull()
 	})
 
-	it("routes thought and answer deltas to separate regions", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+	it("routes thought and answer deltas to separate regions", async () => {
+		const view = fixture()
 
 		const turn = view.beginAssistantTurn()
 		turn.appendThought("weigh")
 		turn.appendThought("ing…")
 		turn.appendAnswer("Hel")
 		turn.appendAnswer("lo.")
+		await view.updateComplete
 
-		const message = root.querySelector(".message.assistant") as HTMLElement
+		const message = view.querySelector(".message.assistant") as HTMLElement
 		expect(message.querySelector(".message-thought-content")?.textContent).toBe("weighing…")
 		expect(message.querySelector(".message-answer")?.textContent).toBe("Hello.")
 	})
 
-	it("creates the Thought disclosure only when reasoning actually arrives", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+	it("creates the Thought disclosure only when reasoning actually arrives", async () => {
+		const view = fixture()
 
 		const turn = view.beginAssistantTurn()
 		turn.appendAnswer("no reasoning here")
+		await view.updateComplete
 
-		expect(root.querySelector(".message-thought")).toBeNull()
+		expect(view.querySelector(".message-thought")).toBeNull()
 	})
 
-	it("collapses the Thought disclosure by default", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+	it("collapses the Thought disclosure by default", async () => {
+		const view = fixture()
 
 		view.beginAssistantTurn().appendThought("hmm")
+		await view.updateComplete
 
-		expect((root.querySelector(".message-thought") as HTMLDetailsElement).open).toBe(false)
+		expect((view.querySelector(".message-thought") as HTMLDetailsElement).open).toBe(false)
 	})
 
-	it("keeps concurrent turns independent", () => {
-		// Each turn closes over its own nodes rather than looking a message back up
+	it("keeps concurrent turns independent", async () => {
+		// Each turn closes over its own state rather than looking a message back up
 		// by id, so a second turn cannot stream into the first.
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+		const view = fixture()
 
 		const first = view.beginAssistantTurn()
 		const second = view.beginAssistantTurn()
 		first.appendAnswer("one")
 		second.appendAnswer("two")
+		await view.updateComplete
 
-		const answers = Array.from(root.querySelectorAll(".message.assistant .message-answer")).map(
+		const answers = Array.from(view.querySelectorAll(".message.assistant .message-answer")).map(
 			(node) => node.textContent,
 		)
 		expect(answers).toEqual(["one", "two"])
 	})
 
-	it("shows a turn error as an alert without touching earlier messages", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+	it("shows a turn error as an alert without touching earlier messages", async () => {
+		const view = fixture()
 
 		view.appendUserMessage("hi")
 		view.showTurnError("Failed to generate a response: boom")
+		await view.updateComplete
 
-		const error = root.querySelector(".message.error") as HTMLElement
+		const error = view.querySelector(".message.error") as HTMLElement
 		expect(error.getAttribute("role")).toBe("alert")
 		expect(error.textContent).toBe("Failed to generate a response: boom")
-		expect(root.querySelector(".message.user")).not.toBeNull()
+		expect(view.querySelector(".message.user")).not.toBeNull()
 	})
 
-	it("removes the empty state on request, and tolerates being asked twice", () => {
-		const { root, emptyState } = fixture()
-		const view = createConversationView(root, emptyState)
+	it("removes the empty state on request, and tolerates being asked twice", async () => {
+		const view = fixture()
 
 		view.clearEmptyState()
-		expect(document.getElementById("empty-state")).toBeNull()
-		expect(() => view.clearEmptyState()).not.toThrow()
+		await view.updateComplete
+		expect(view.querySelector(".empty-state")).toBeNull()
+		expect(() => {
+			view.clearEmptyState()
+		}).not.toThrow()
 	})
 
-	it("tolerates a missing empty state", () => {
-		document.body.innerHTML = '<section id="conversation"></section>'
-		const root = document.getElementById("conversation") as HTMLElement
-		const view = createConversationView(root, null)
+	it("tolerates a missing empty state", async () => {
+		document.body.innerHTML = ""
+		const view = document.createElement("bhai-conversation") as BhaiConversation
+		document.body.appendChild(view)
 
 		expect(() => view.clearEmptyState()).not.toThrow()
 	})

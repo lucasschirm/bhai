@@ -9,12 +9,12 @@ import type { BHAI, BHAIConversation } from "@lucasschirm/bhai"
 import type { WebLLM } from "@lucasschirm/bhai/plugins/webllm"
 import type * as webllm from "@mlc-ai/web-llm"
 
-import type { ColdStartPanel } from "../components/cold-start-panel.js"
-import type { Composer } from "../components/composer.js"
-import type { ConversationView } from "../components/conversation-view.js"
-import type { ModelSelect } from "../components/model-select.js"
-import type { StatusIndicator } from "../components/status-indicator.js"
-import type { TelemetryPanel } from "../components/telemetry-panel.js"
+import type { LitTypeahead } from "@lucasschirm/litjs-typeahead"
+import type { BhaiColdStart } from "../components/cold-start-panel.js"
+import type { BhaiComposer } from "../components/composer.js"
+import type { BhaiConversation } from "../components/conversation-view.js"
+import type { BhaiStatusIndicator } from "../components/status-indicator.js"
+import type { BhaiTelemetry } from "../components/telemetry-panel.js"
 import { formatSeconds, formatTokens, formatTps } from "../lib/format.js"
 import { parseRuntimeStats } from "../lib/stats.js"
 import { thermalColor, thermalRatio } from "../lib/thermal.js"
@@ -53,14 +53,14 @@ export interface ChatControllerDeps {
 	engine: webllm.MLCEngine
 	/** The registered WebLLM driver, for `capabilities()`. */
 	driver: WebLLM
-	/** UI controllers. */
+	/** UI custom elements. */
 	ui: {
-		status: StatusIndicator
-		composer: Composer
-		conversation: ConversationView
-		telemetry: TelemetryPanel
-		coldStart: ColdStartPanel
-		modelSelect: ModelSelect
+		status: BhaiStatusIndicator
+		composer: BhaiComposer
+		conversation: BhaiConversation
+		telemetry: BhaiTelemetry
+		coldStart: BhaiColdStart
+		modelSelect: LitTypeahead
 	}
 }
 
@@ -86,7 +86,7 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 	/** Whether the selected model's weights have been downloaded this session. */
 	let modelLoaded = false
 	/** The turn currently streaming, or null between turns. */
-	let turn: ReturnType<ConversationView["beginAssistantTurn"]> | null = null
+	let turn: ReturnType<BhaiConversation["beginAssistantTurn"]> | null = null
 	/** `performance.now()` at send time, for TTFT. */
 	let sendStartTime = 0
 	/** `performance.now()` at the first delta of the current turn. */
@@ -147,13 +147,13 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 		const decodeRatio = thermalRatio(decodeTps ?? 0)
 
 		const { inputTokens = 0, outputTokens = 0 } = conversation.usage
-		const selectedModelId = ui.modelSelect.selectedId()
+		const selectedModelId = ui.modelSelect.value
 		const contextWindow = selectedModelId
 			? driver.capabilities(selectedModelId).contextWindow
 			: undefined
 		const ttftMs = firstTokenTime === null ? null : firstTokenTime - sendStartTime
 
-		ui.telemetry.update({
+		ui.telemetry.updateStats({
 			prefillTps: formatTps(prefillTps),
 			decodeTps: formatTps(decodeTps),
 			ttft: ttftMs === null ? "—" : formatSeconds(ttftMs / 1000),

@@ -1,0 +1,31 @@
+/**
+ * @file bhai example · design tokens
+ *
+ * Global CSS custom properties used by the Lit-based example components and by
+ * the imported `<lit-typeahead>` element. Imported in `index.html` before any
+ * component styles so the values cascade into every shadow root.
+ */
+
+:root {
+	--graphite-900: #0c0e13;
+	--graphite-800: #141821;
+	--graphite-700: #1e2430;
+	--line: #2a3140;
+	--text: #e7ecf3;
+	--muted: #7c899b;
+	--cold: #38bdf8;
+	--mid: #a78bfa;
+	--warm: #fb7185;
+	--ok: #34d399;
+	--font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+	--font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+	/* Tokens consumed by `<lit-typeahead>` so the model picker matches the theme. */
+	--typeahead-text-color: var(--text);
+	--typeahead-background-color: var(--graphite-700);
+	--typeahead-border-color: var(--line);
+	--typeahead-border-radius: 4px;
+	--typeahead-padding: 0.5rem 0.75rem;
+	--typeahead-focus-outline-color: var(--cold);
+}

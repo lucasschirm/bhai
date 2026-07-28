@@ -1,22 +1,28 @@
 // @vitest-environment happy-dom
 
 import type { McpServerState } from "@lucasschirm/bhai/plugins/mcp"
-import { describe, expect, it, vi } from "vitest"
-import { type McpCardHandlers, SERVER_INDEX_KEYS, renderServerCard } from "./mcp-server-card.js"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type BhaiMcpServerCard, SERVER_INDEX_KEYS } from "./mcp-server-card.js"
 
 /** A payload that becomes an element the moment it is parsed as HTML. */
 const XSS = '<img src=x onerror="globalThis.__pwned = true">'
 
 /** Handlers that record which action fired for which id. */
-function spyHandlers(): McpCardHandlers & { calls: string[] } {
+function spyHandlers(card: BhaiMcpServerCard): { calls: string[] } {
 	const calls: string[] = []
-	return {
-		calls,
-		onRefresh: (id) => calls.push(`refresh:${id}`),
-		onRetry: (id) => calls.push(`retry:${id}`),
-		onRemove: (id) => calls.push(`remove:${id}`),
-		onShowError: (id) => calls.push(`error:${id}`),
-	}
+	card.addEventListener("bhai-refresh", (event) => {
+		calls.push(`refresh:${(event as CustomEvent<{ id: string }>).detail.id}`)
+	})
+	card.addEventListener("bhai-retry", (event) => {
+		calls.push(`retry:${(event as CustomEvent<{ id: string }>).detail.id}`)
+	})
+	card.addEventListener("bhai-remove", (event) => {
+		calls.push(`remove:${(event as CustomEvent<{ id: string }>).detail.id}`)
+	})
+	card.addEventListener("bhai-show-error", (event) => {
+		calls.push(`error:${(event as CustomEvent<{ id: string }>).detail.id}`)
+	})
+	return { calls }
 }
 
 /** Build a server snapshot with sane defaults. */
@@ -32,12 +38,27 @@ function serverState(overrides: Partial<McpServerState> = {}): McpServerState {
 	} as McpServerState
 }
 
-describe("renderServerCard", () => {
-	it("renders untrusted server text as text, never as markup", () => {
-		// Tool names, descriptions, the server name and error messages all come
-		// from whatever endpoint the user pasted a URL for. If any of them reached
-		// an innerHTML sink, this payload would become a real <img> element.
-		const card = renderServerCard(
+/** Build a card fixture and wait for its first render. */
+async function fixture(state: McpServerState): Promise<BhaiMcpServerCard> {
+	document.body.innerHTML = ""
+	const card = document.createElement("bhai-mcp-server-card") as BhaiMcpServerCard
+	card.className = "mcp-server"
+	card.state = state
+	document.body.appendChild(card)
+	await card.updateComplete
+	return card
+}
+
+describe("BhaiMcpServerCard", () => {
+	beforeEach(() => {
+		document.body.innerHTML = ""
+	})
+
+	it("renders untrusted server text as text, never as markup", async () => {
+		const spy = vi.fn()
+		Object.defineProperty(globalThis, "__pwned", { set: spy, configurable: true })
+
+		const card = await fixture(
 			serverState({
 				serverName: XSS,
 				status: "error",
@@ -49,26 +70,23 @@ describe("renderServerCard", () => {
 					phase: "connect",
 				},
 			}),
-			spyHandlers(),
-			null,
 		)
 
+		expect(spy).not.toHaveBeenCalled()
 		expect(card.querySelectorAll("img")).toHaveLength(0)
 		expect(card.querySelector(".mcp-server-name")?.textContent).toBe(XSS)
 		expect(card.dataset.name).toBe(XSS)
 		expect(card.textContent).toContain(XSS)
 	})
 
-	it("indexes the keys the server list searches on", () => {
-		const card = renderServerCard(
+	it("indexes the keys the server list searches on", async () => {
+		const card = await fixture(
 			serverState({
 				tools: [
 					{ name: "mcp__example__search", shortName: "search", description: "Find things" },
 					{ name: "mcp__example__create", shortName: "create", description: "" },
 				],
 			}),
-			spyHandlers(),
-			null,
 		)
 
 		// Every key the list declares must actually be present, or search and sort
@@ -83,9 +101,9 @@ describe("renderServerCard", () => {
 		expect(card.dataset.tools).toBe("search create")
 	})
 
-	it("offers refresh and remove when connected", () => {
-		const handlers = spyHandlers()
-		const card = renderServerCard(serverState(), handlers, null)
+	it("offers refresh and remove when connected", async () => {
+		const card = await fixture(serverState())
+		const handlers = spyHandlers(card)
 
 		const labels = Array.from(card.querySelectorAll("button")).map((b) =>
 			b.getAttribute("aria-label"),
@@ -98,9 +116,8 @@ describe("renderServerCard", () => {
 		expect(handlers.calls).toEqual(["refresh:srv-1", "remove:srv-1"])
 	})
 
-	it("offers error details and retry when failed", () => {
-		const handlers = spyHandlers()
-		const card = renderServerCard(
+	it("offers error details and retry when failed", async () => {
+		const card = await fixture(
 			serverState({
 				status: "error",
 				error: {
@@ -111,9 +128,8 @@ describe("renderServerCard", () => {
 					phase: "connect",
 				},
 			}),
-			handlers,
-			null,
 		)
+		const handlers = spyHandlers(card)
 
 		for (const button of card.querySelectorAll("button")) {
 			;(button as HTMLButtonElement).click()
@@ -123,33 +139,15 @@ describe("renderServerCard", () => {
 		expect(card.querySelector(".mcp-server-status")?.textContent).toBe("failed · TypeError")
 	})
 
-	it("calls out a connected server with no tools", () => {
-		const card = renderServerCard(serverState({ tools: [] }), spyHandlers(), null)
+	it("calls out a connected server with no tools", async () => {
+		const card = await fixture(serverState({ tools: [] }))
 		expect(card.querySelector(".mcp-server-status")?.textContent).toBe("connected · no tools")
 	})
 
-	it("nests the injected tool list", () => {
-		const toolList = document.createElement("details")
-		toolList.className = "mcp-tools"
-		const card = renderServerCard(serverState(), spyHandlers(), toolList)
-		expect(card.querySelector(".mcp-tools")).toBe(toolList)
-	})
-
-	it("shows the endpoint URL as the name's tooltip", () => {
-		const card = renderServerCard(serverState(), spyHandlers(), null)
+	it("shows the endpoint URL as the name's tooltip", async () => {
+		const card = await fixture(serverState())
 		expect(card.querySelector(".mcp-server-name")?.getAttribute("title")).toBe(
 			"https://example.com/mcp",
 		)
-	})
-
-	it("does not execute injected markup even when the card is inserted live", () => {
-		const spy = vi.fn()
-		Object.defineProperty(globalThis, "__pwned", { set: spy, configurable: true })
-
-		const card = renderServerCard(serverState({ serverName: XSS }), spyHandlers(), null)
-		document.body.appendChild(card)
-
-		expect(spy).not.toHaveBeenCalled()
-		card.remove()
 	})
 })

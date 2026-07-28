@@ -10,28 +10,21 @@
 
 import type { McpManager } from "@lucasschirm/bhai/plugins/mcp"
 
-import type { McpAddForm } from "../components/mcp-add-form.js"
-import type { McpErrorDialog } from "../components/mcp-error-dialog.js"
-import type { McpCardHandlers } from "../components/mcp-server-card.js"
-import type { McpServerList } from "../components/mcp-server-list.js"
+import type { BhaiMcpAddForm } from "../components/mcp-add-form.js"
+import type { BhaiMcpErrorDialog } from "../components/mcp-error-dialog.js"
+import type { BhaiMcpServerList } from "../components/mcp-server-list.js"
 import { loadServers, parseHeaderLines, saveServers, validateServerUrl } from "../lib/mcp-store.js"
 
 /** Everything the MCP controller drives. */
 export interface McpControllerDeps {
 	/** The manager handed back by `createMcpPlugin()`. */
 	manager: McpManager
-	/**
-	 * Build the server list, bound to this controller's card handlers.
-	 *
-	 * A factory rather than a ready-made list because the two are mutually
-	 * dependent: the list needs handlers that only exist once the controller is
-	 * built, and the controller needs a list to render into.
-	 */
-	createList(handlers: McpCardHandlers): McpServerList
-	/** The add-server form. */
-	form: McpAddForm
-	/** The error-details dialog. */
-	dialog: McpErrorDialog
+	/** The server-list custom element. */
+	serverList: BhaiMcpServerList
+	/** The add-server form custom element. */
+	form: BhaiMcpAddForm
+	/** The error-details dialog custom element. */
+	dialog: BhaiMcpErrorDialog
 }
 
 /** Controller returned by {@link createMcpController}. */
@@ -46,7 +39,7 @@ export interface McpController {
  * @param deps - The manager, the list factory, and the component controllers
  */
 export function createMcpController(deps: McpControllerDeps): McpController {
-	const { manager, form, dialog } = deps
+	const { manager, serverList, form, dialog } = deps
 
 	/**
 	 * Persist the current server list.
@@ -109,37 +102,39 @@ export function createMcpController(deps: McpControllerDeps): McpController {
 		}
 	}
 
-	const handlers: McpCardHandlers = {
-		onRefresh: (id) => {
-			void manager.refresh(id)
-		},
-		onRetry: (id) => {
-			void manager.retry(id)
-		},
-		onRemove: (id) => {
-			void (async () => {
-				try {
-					await manager.remove(id)
-					persist()
-				} catch (error) {
-					console.error("Failed to remove MCP server:", error)
-				}
-			})()
-		},
-		onShowError: (id) => {
-			const state = manager.get(id)
-			if (state?.error) dialog.show(state.error)
-		},
-	}
-
-	const list = deps.createList(handlers)
-
 	return {
 		async start() {
 			// Every transition re-renders, including the `connecting` one that fires
 			// before the network call.
-			manager.subscribe((states) => list.render(states))
-			list.render(manager.list())
+			manager.subscribe((states) => {
+				serverList.states = states
+			})
+			serverList.states = manager.list()
+
+			serverList.addEventListener("bhai-refresh", (event) => {
+				const { id } = (event as CustomEvent<{ id: string }>).detail
+				void manager.refresh(id)
+			})
+			serverList.addEventListener("bhai-retry", (event) => {
+				const { id } = (event as CustomEvent<{ id: string }>).detail
+				void manager.retry(id)
+			})
+			serverList.addEventListener("bhai-remove", (event) => {
+				const { id } = (event as CustomEvent<{ id: string }>).detail
+				void (async () => {
+					try {
+						await manager.remove(id)
+						persist()
+					} catch (error) {
+						console.error("Failed to remove MCP server:", error)
+					}
+				})()
+			})
+			serverList.addEventListener("bhai-show-error", (event) => {
+				const { id } = (event as CustomEvent<{ id: string }>).detail
+				const state = manager.get(id)
+				if (state?.error) dialog.show(state.error)
+			})
 
 			form.onSubmit(() => void submit())
 
