@@ -150,29 +150,18 @@ All numbers are formatted for readability (`formatTps`, `formatTokens`, etc.).
 
 ### Model selection
 
-The example maintains a curated allowlist of models (Qwen3, Llama, Phi variants)
-and intersects it at runtime against `webllm.prebuiltAppConfig.model_list` to
-handle different versions of the installed `@mlc-ai/web-llm` package:
+The model picker is a `<lit-typeahead>` custom element from
+`@lucasschirm/litjs-typeahead`. `main.ts` populates it with every model that the
+installed `@mlc-ai/web-llm` package advertises in
+`webllm.prebuiltAppConfig.model_list`:
 
 ```javascript
-const ALLOWLIST = [
-  "Qwen3-0.6B-q4f16_1-MLC",
-  "Qwen3-1.7B-q4f16_1-MLC",
-  "Llama-3.2-1B-Instruct-q4f16_1-MLC",
-  "Llama-3.2-3B-Instruct-q4f16_1-MLC",
-  "Phi-3.5-mini-instruct-q4f16_1-MLC",
-]
-
-const available = ALLOWLIST.filter((id) =>
-  webllm.prebuiltAppConfig.model_list.some((m) => m.model_id === id),
-)
+const modelIds = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
 ```
 
-The default model is the first Qwen3 in the available list (or the first
-available model if no Qwen3 is found). The model picker is a `<lit-typeahead>`
-custom element from `@lucasschirm/litjs-typeahead`. `main.ts` passes the
-available model IDs as `.items`, sets `.value` to the default, and listens for
-the `change` event (detail: `{ value: string }`) to create a fresh conversation
+The default selection prefers a Qwen3 model because it emits reasoning blocks,
+which the demo's Thought panel is built to surface; otherwise it falls back to
+the first available model. Selecting a model creates a fresh conversation
 (simplest correct behavior).
 
 ### Cold-start feedback

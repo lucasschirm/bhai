@@ -61,9 +61,9 @@ orchestrators and gets out of the way.
 
 ### `src/app/` — orchestration (no DOM)
 
-- **`webllm-engine.ts`** — WebGPU capability check, the curated model allowlist
-  intersected with `webllm.prebuiltAppConfig.model_list`, and `MLCEngine`
-  creation with the cold-start progress callback.
+- **`webllm-engine.ts`** — WebGPU capability check, full model list from
+  `webllm.prebuiltAppConfig.model_list`, and `MLCEngine` creation with the
+  cold-start progress callback.
 - **`chat-controller.ts`** — Conversation lifecycle, send/abort, TTFT
   measurement, and the `runtimeStatsText()` → telemetry pipeline. Narrows the
   `message.delta` payload at one boundary, because `ConversationEvents` carries
@@ -118,9 +118,11 @@ look back up on every delta.
 ## Model selection
 
 The bare `<select>` was replaced by `<lit-typeahead>` from
-`@lucasschirm/litjs-typeahead`. `main.ts` passes the curated model allowlist as
-`.items`, sets `.value` to the default model, and listens for the `change`
-event (detail: `{ value: string }`) to switch models.
+`@lucasschirm/litjs-typeahead`. `main.ts` passes every model in
+`webllm.prebuiltAppConfig.model_list` as `.items`, sets `.value` to the default
+model, and listens for the `change` event (detail: `{ value: string }`) to
+switch models. The default prefers a Qwen3 model because it emits reasoning
+blocks that the Thought panel surfaces.
 
 ## MCP filtering and sorting
 

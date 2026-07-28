@@ -1,19 +1,6 @@
-/** @file WebGPU capability check, model allowlist resolution, and engine setup. */
+/** @file WebGPU capability check, model list resolution, and engine setup. */
 
 import * as webllm from "@mlc-ai/web-llm"
-
-/**
- * Curated allowlist of models to offer. Intersected at runtime with what the
- * installed `@mlc-ai/web-llm` actually ships, so a version bump that drops a
- * model degrades to the remaining ones instead of offering a dead entry.
- */
-const ALLOWLIST = [
-	"Qwen3-0.6B-q4f16_1-MLC",
-	"Qwen3-1.7B-q4f16_1-MLC",
-	"Llama-3.2-1B-Instruct-q4f16_1-MLC",
-	"Llama-3.2-3B-Instruct-q4f16_1-MLC",
-	"Phi-3.5-mini-instruct-q4f16_1-MLC",
-]
 
 /** The models to show, and which one starts selected. */
 export interface ModelChoice {
@@ -33,22 +20,13 @@ export function hasWebGpu(): boolean {
 }
 
 /**
- * Resolve the model list to offer.
+ * Resolve every model shipped by the installed `@mlc-ai/web-llm` package.
  *
- * Falls back to the full installed list if none of the allowlist survives the
- * intersection, and returns an empty list only when the package ships nothing.
+ * The default selection prefers a Qwen3 model when available because it emits
+ * reasoning blocks, which the demo's Thought panel is built to surface.
  */
 export function resolveModels(): ModelChoice {
-	const installed = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
-	const available = ALLOWLIST.filter((id) => installed.includes(id))
-
-	if (available.length === 0 && installed.length > 0) {
-		console.warn("Allowlist models not found; using all available models instead.")
-	}
-
-	const modelIds = available.length > 0 ? available : installed
-	// Prefer a Qwen3 (it emits `<think>` blocks, which is what the reasoning
-	// pane exists to show off); otherwise take whatever is first.
+	const modelIds = webllm.prebuiltAppConfig.model_list.map((model) => model.model_id)
 	const defaultModelId = modelIds.find((id) => id.startsWith("Qwen3")) ?? modelIds[0] ?? ""
 
 	return { modelIds, defaultModelId }
